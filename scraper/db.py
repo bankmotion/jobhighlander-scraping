@@ -20,8 +20,8 @@ _ALLOWED_TABLES = {"jobs", "jobs_temp"}
 _UPSERT_SQL = """
 INSERT INTO {table}
     (site, site_job_id, title, description, job_url, apply_url, company, company_url,
-     job_type, remote, location, posted_at, created_at, updated_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
+     job_type, remote, location, salary, posted_at, created_at, updated_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
 ON DUPLICATE KEY UPDATE
     title = VALUES(title),
     description = VALUES(description),
@@ -33,6 +33,7 @@ ON DUPLICATE KEY UPDATE
     job_type = COALESCE(VALUES(job_type), job_type),
     remote = VALUES(remote),
     location = VALUES(location),
+    salary = COALESCE(VALUES(salary), salary),
     posted_at = VALUES(posted_at),
     updated_at = UTC_TIMESTAMP(3)
 """
@@ -90,6 +91,7 @@ class JobRepository:
         company_url: Optional[str] = None,
         job_type: Optional[str] = None,
         remote: bool = False,
+        salary: Optional[str] = None,
     ) -> str:
         """Insert or update one job. Returns 'inserted' | 'updated' | 'unchanged'."""
         if self._conn is None:
@@ -99,7 +101,7 @@ class JobRepository:
             cur.execute(
                 _UPSERT_SQL.format(table=self.table),
                 (site, site_job_id, title, description, link, apply_url, company,
-                 company_url, job_type, remote, location, posted_at),
+                 company_url, job_type, remote, location, salary, posted_at),
             )
             # PyMySQL/MySQL rowcount: 1 = inserted, 2 = updated, 0 = no change.
             return {1: "inserted", 2: "updated", 0: "unchanged"}.get(cur.rowcount, "unknown")

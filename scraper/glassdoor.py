@@ -518,6 +518,7 @@ class GlassdoorScraper(BaseScraper):
                 job_type=None,
                 remote=remote,
                 location=location or None,
+                salary=item.get("salary") or None,
                 posted_at=compute_posted_at(posted_text),
                 apply_url=apply_url,
             )

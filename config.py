@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     # stable across runs (keeps Cloudflare's cf_clearance valid).
     glassdoor_proxy_session_file: str = str(BASE_DIR / "sessions" / "glassdoor_proxy_session.txt")
 
+    # ── JobRight scraper (writes to live `jobs`, site='jobright'; login-gated,
+    #    personalized recommendation feed via Google sign-in) ──
+    jobright_recommend_url: str = "https://jobright.ai/jobs/recommend"
+    # Internal paginated JSON feed the recommend page calls (position/count).
+    jobright_recommend_api: str = "https://jobright.ai/swan/recommend/list/jobs"
+    jobright_session_file: str = str(BASE_DIR / "sessions" / "jobright_session.json")
+    jobright_user_data_dir: str = str(BASE_DIR / "sessions" / "jobright-chrome-profile")
+    jobright_proxy_url: Optional[str] = None
+
     # ── Scheduler (random gap between runs) ──
     schedule_min_hours: float = 1.0
     schedule_max_hours: float = 3.0

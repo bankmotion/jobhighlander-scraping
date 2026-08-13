@@ -16,10 +16,12 @@ import sys
 from logger import log
 from scraper.glassdoor import GlassdoorScraper
 from scraper.indeed import IndeedScraper
+from scraper.jobright import JobRightScraper
 
 SCRAPERS = {
     "indeed": IndeedScraper,
     "glassdoor": GlassdoorScraper,
+    "jobright": JobRightScraper,
     # Add more sites here as their links arrive — each reuses the same core.
 }
 

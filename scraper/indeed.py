@@ -81,6 +81,10 @@ _EXTRACT_JS = r"""
         remote: wm.type === 'REMOTE_ALWAYS' || !!r.remoteLocation,
         jobType: (r.jobTypes && r.jobTypes.length) ? r.jobTypes.join(', ') : '',
         company: (r.company || '').trim(),
+        salary: (function () {
+          const s = r.salarySnippet || r.estimatedSalary || r.extractedSalary || {};
+          return (s.text || s.salaryText || s.formattedRange || '').trim();
+        })(),
       };
     });
   } catch (e) {}
@@ -103,6 +107,11 @@ _EXTRACT_JS = r"""
       card.querySelector('[data-testid="jobsnippet_footer"]') ||
       card.querySelector('.job-snippet') ||
       card.querySelector('[class*="snippet" i]');
+    const salEl =
+      card.querySelector('[data-testid="salary-snippet-container"]') ||
+      card.querySelector('.salary-snippet-container') ||
+      card.querySelector('.estimated-salary') ||
+      card.querySelector('[class*="salary" i]');
     // Posted-date text: prefer explicit date nodes, else any descendant text
     // that reads like a date ("posted/active … ago", "just posted").
     // Prefer the embedded posted-time; fall back to date-like card text
@@ -120,6 +129,7 @@ _EXTRACT_JS = r"""
       location: info.location || '',
       remote: !!info.remote,
       jobType: info.jobType || '',
+      salary: info.salary || (salEl ? salEl.innerText.trim() : ''),
       snippet: snipEl ? snipEl.innerText.trim() : '',
       posted: posted.slice(0, 64),
       pubDate: info.pub || null,
@@ -337,6 +347,7 @@ class IndeedScraper(BaseScraper):
                 job_type=job_type,
                 remote=remote,
                 location=location,
+                salary=item.get("salary") or None,
                 posted_at=compute_posted_at(item.get("posted"), item.get("pubDate")),
                 apply_url=apply_url,
             )

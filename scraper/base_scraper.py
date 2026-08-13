@@ -27,6 +27,7 @@ class ScrapedJob:
     company_url: Optional[str] = None
     job_type: Optional[str] = None
     remote: bool = False
+    salary: Optional[str] = None
 
 
 class BaseScraper:
@@ -71,6 +72,7 @@ class BaseScraper:
             company_url=job.company_url,
             job_type=job.job_type,
             remote=job.remote,
+            salary=job.salary,
         )
         self.counts[result] = self.counts.get(result, 0) + 1
         log.info("[{}] saved {} ({}) — {}", self.site, result, job.site_job_id, (job.title or "")[:50])
