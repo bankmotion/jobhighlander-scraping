@@ -1,9 +1,9 @@
-"""Glassdoor scraper (experimental).
+"""Glassdoor scraper.
 
-Writes to `jobs_temp` (a clone of `jobs`) so it never touches the live table
-while we validate it. Structure mirrors the Indeed scraper: subclass
-`BaseScraper`, clear Cloudflare, behave like a human, extract the listing, then
-open each posting for the full description.
+Writes to the live `jobs` table (site = 'glassdoor'), alongside Indeed. Structure
+mirrors the Indeed scraper: subclass `BaseScraper`, clear Cloudflare, behave like
+a human, extract the listing, then open each posting for the full description.
+(An empty `jobs_temp` clone of `jobs` remains available for experiments.)
 
 Glassdoor differs from Indeed in two ways that shape this code:
   1. It throws a "sign up" / auth modal over the results a few seconds in — we
@@ -198,7 +198,7 @@ def compute_posted_at(age_text):
 
 class GlassdoorScraper(BaseScraper):
     site = "glassdoor"
-    table = "jobs_temp"  # experimental — keep off the live `jobs` table
+    table = "jobs"  # live table — Glassdoor jobs show in the app alongside Indeed
     user_data_dir = settings.glassdoor_user_data_dir  # isolated Chrome profile
 
     def __init__(self):
@@ -503,23 +503,28 @@ class GlassdoorScraper(BaseScraper):
                 company_url = detail.get("company_url")
                 posted_text = posted_text or detail.get("posted") or ""
 
-            jobs.append(
-                ScrapedJob(
-                    site_job_id=jid,
-                    title=item.get("title", "") or "(no title)",
-                    description=description,
-                    link=item.get("url") or self._job_url(jid),
-                    company=company,
-                    company_url=company_url,
-                    job_type=None,
-                    remote=remote,
-                    location=location or None,
-                    posted_at=compute_posted_at(posted_text),
-                    apply_url=apply_url,
-                )
+            # Canonical job URL MUST carry the ?jl=<jobListingId> — the slug alone
+            # doesn't resolve to a specific posting (shows a blank/redirect page).
+            clean = (item.get("url") or "").split("?")[0]
+            job_link = f"{clean}?jl={jid}" if clean else self._job_url(jid)
+
+            job = ScrapedJob(
+                site_job_id=jid,
+                title=item.get("title", "") or "(no title)",
+                description=description,
+                link=job_link,
+                company=company,
+                company_url=company_url,
+                job_type=None,
+                remote=remote,
+                location=location or None,
+                posted_at=compute_posted_at(posted_text),
+                apply_url=apply_url,
             )
+            self.save(job)  # persist this job immediately, one by one
+            jobs.append(job)
         log.info(
-            "This page: {} new job(s) to fetch, {} already stored (detail skipped).",
+            "This page: {} new job(s) fetched & saved, {} already stored (detail skipped).",
             len(jobs),
             skipped,
         )
@@ -560,68 +565,96 @@ class GlassdoorScraper(BaseScraper):
         return out
 
     async def _capture_apply_url(self):
-        """Click 'Apply on employer site' and capture the FINAL employer/ATS URL
-        it redirects to (past Glassdoor's own redirect stub). Returns None for
-        Easy-Apply-only jobs (internal Glassdoor apply — no external URL). Does
-        NOT submit anything."""
+        """Get the apply URL for a job — works for BOTH apply types:
+          * "Apply on employer site" → an Indeed redirect to the employer/ATS
+            (`indeed.com/rc/gd/job?a=...`).
+          * "Easy Apply" → Indeed's internal apply form
+            (`smartapply.indeed.com/...`), i.e. an Indeed internal bid — same as
+            Indeed's "Apply with Indeed".
+        Both flows POST to `/jobs/redirects`, whose JSON body carries the real URL
+        (`{"redirectUrl": "..."}`). Glassdoor then window.open()s it; Easy Apply
+        opens a popup, employer-site's async open is blocked. Either way we read
+        the URL from the intercepted response (and close any popup). Does NOT
+        submit anything."""
         page = self.browser.page
         ctx = self.browser.context
-        popup: dict = {}
+        captured: dict = {}
+        popups: list = []
+
+        def _on_resp(resp):
+            if "/jobs/redirects" in resp.url:
+                asyncio.create_task(_read(resp))
+
+        async def _read(resp):
+            try:
+                data = await resp.json()
+                if isinstance(data, dict) and data.get("redirectUrl"):
+                    captured["url"] = data["redirectUrl"]
+                    return
+            except Exception:
+                pass
+            try:
+                m = re.search(r'"redirectUrl"\s*:\s*"([^"]+)"', await resp.text())
+                if m:
+                    captured["url"] = m.group(1)
+            except Exception:
+                pass
 
         def _on_page(p):
-            popup["p"] = p
+            popups.append(p)
 
-        def _is_final(u: str) -> bool:
-            return bool(u) and "about:blank" not in u and "glassdoor.com" not in u
-
-        btn = await page.query_selector('[data-test="applyButton"]')
-        if btn is None or not await btn.is_visible():
+        btn = None
+        for sel in (
+            '[data-test="applyButton"]',
+            '[data-test="easyApply"]',
+            'button:has-text("Apply on employer site")',
+            'button:has-text("Easy Apply")',
+        ):
+            try:
+                el = await page.query_selector(sel)
+            except Exception:
+                el = None
+            if el and await el.is_visible():
+                btn = el
+                break
+        if btn is None:
             return None
-        try:
-            label = (await btn.inner_text() or "").lower()
-        except Exception:
-            label = ""
-        if "easy apply" in label:
-            return None  # internal Glassdoor apply — no external URL
 
+        page.on("response", _on_resp)
         ctx.on("page", _on_page)
         try:
             try:
                 await btn.click(timeout=6000)
             except Exception:
                 await btn.click(force=True, timeout=6000)
-            url = None
-            for _ in range(10):
-                await asyncio.sleep(1)
-                p = popup.get("p")
-                if p:
-                    try:
-                        if _is_final(p.url or ""):
-                            url = p.url
-                            break
-                    except Exception:
-                        pass
-                if _is_final(page.url or ""):
-                    url = page.url
+            for _ in range(12):
+                if captured.get("url"):
                     break
-            if url:
-                log.info("Captured apply URL -> {}", url[:120])
-            return url
+                await asyncio.sleep(0.5)
         except Exception as exc:
             log.warning("Could not capture Glassdoor apply URL: {}", exc)
-            return None
         finally:
+            try:
+                page.remove_listener("response", _on_resp)
+            except Exception:
+                pass
             try:
                 ctx.remove_listener("page", _on_page)
             except Exception:
                 pass
-            p = popup.get("p")
-            if p:
+            # Close the Indeed apply popup Easy Apply opens (don't leave it open).
+            for p in popups:
                 try:
                     if not p.is_closed():
                         await p.close()
                 except Exception:
                     pass
+        url = captured.get("url")
+        if url:
+            log.info("Captured apply URL -> {}", url[:110])
+        else:
+            log.info("apply: no redirectUrl captured")
+        return url
 
 
 async def main() -> None:

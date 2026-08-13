@@ -1,5 +1,6 @@
 @echo off
-REM Run the JobHighLander scraper on a loop with a random 1-3h gap between runs.
+REM Run the JobHighLander scrapers (Indeed + Glassdoor) on a loop with a random
+REM 1-3h gap between runs.
 cd /d "%~dp0"
 call venv\Scripts\activate.bat
-python scheduler.py indeed
+python scheduler.py all

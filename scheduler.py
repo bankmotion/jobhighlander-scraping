@@ -5,8 +5,9 @@ The gap is a random duration in [SCHEDULE_MIN_HOURS, SCHEDULE_MAX_HOURS]
 `python main.py <site>` subprocess, so every run gets a clean browser/session.
 
 Usage:
-    python scheduler.py            # site: indeed
-    python scheduler.py indeed
+    python scheduler.py                    # site: indeed
+    python scheduler.py indeed glassdoor   # both each cycle
+    python scheduler.py all                # every registered site each cycle
 """
 import random
 import subprocess
@@ -21,12 +22,13 @@ from logger import log
 BASE_DIR = Path(__file__).resolve().parent
 
 
-def _run_once(site: str) -> None:
+def _run_once(sites: list[str]) -> None:
     start = datetime.now()
-    log.info("=== Scrape run start: {} ({}) ===", start.strftime("%Y-%m-%d %H:%M:%S"), site)
+    label = ", ".join(sites)
+    log.info("=== Scrape run start: {} ({}) ===", start.strftime("%Y-%m-%d %H:%M:%S"), label)
     try:
         result = subprocess.run(
-            [sys.executable, str(BASE_DIR / "main.py"), site],
+            [sys.executable, str(BASE_DIR / "main.py"), *sites],
             cwd=str(BASE_DIR),
             check=False,
         )
@@ -37,13 +39,13 @@ def _run_once(site: str) -> None:
 
 
 def main() -> None:
-    site = (sys.argv[1] if len(sys.argv) > 1 else "indeed").lower()
+    sites = [a.lower() for a in sys.argv[1:]] or ["indeed"]
     lo = min(settings.schedule_min_hours, settings.schedule_max_hours)
     hi = max(settings.schedule_min_hours, settings.schedule_max_hours)
-    log.info("Scheduler started — running '{}' with a random {:.2f}–{:.2f}h gap between runs.", site, lo, hi)
+    log.info("Scheduler started — running [{}] with a random {:.2f}–{:.2f}h gap between runs.", ", ".join(sites), lo, hi)
 
     while True:
-        _run_once(site)
+        _run_once(sites)
         delay_hours = random.uniform(lo, hi)
         next_run = datetime.now() + timedelta(hours=delay_hours)
         log.info("Next run in {:.2f}h — at {}", delay_hours, next_run.strftime("%Y-%m-%d %H:%M:%S"))

@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # URL it opens (they have no static apply link).
     capture_apply_url: bool = True
 
-    # ── Glassdoor scraper (experimental — writes to `jobs_temp`, not `jobs`) ──
+    # ── Glassdoor scraper (writes to the live `jobs` table, site='glassdoor') ──
     glassdoor_search_url: str = "https://www.glassdoor.com/Job/software-engineer-jobs-SRCH_KO0,17.htm"
     glassdoor_session_file: str = str(BASE_DIR / "sessions" / "glassdoor_session.json")
     # Its own Chrome profile so it never contends with the Indeed scheduler for

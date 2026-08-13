@@ -46,13 +46,19 @@ class BaseScraper:
     def __init__(self):
         self.browser = StealthBrowser(user_data_dir=self.user_data_dir, proxy_url=self.proxy_url)
         self.repo = JobRepository(table=self.table)
+        #: Running write totals, updated by save() as each job is persisted.
+        self.counts = {"inserted": 0, "updated": 0, "unchanged": 0, "unknown": 0}
 
     async def scrape(self) -> list[ScrapedJob]:
-        """Return the jobs found. Implemented per site."""
+        """Scrape the site, calling `self.save(job)` for EACH job as it completes
+        (so it lands in the DB immediately). May also return the jobs list."""
         raise NotImplementedError
 
     def save(self, job: ScrapedJob) -> str:
-        return self.repo.upsert_job(
+        """Upsert ONE job right away (the DB connection autocommits), and update
+        the running counts. Called per-job by the scrapers so every finished job
+        is persisted immediately instead of being batched at the end of the run."""
+        result = self.repo.upsert_job(
             site=self.site,
             site_job_id=job.site_job_id,
             title=job.title,
@@ -66,21 +72,19 @@ class BaseScraper:
             job_type=job.job_type,
             remote=job.remote,
         )
+        self.counts[result] = self.counts.get(result, 0) + 1
+        log.info("[{}] saved {} ({}) — {}", self.site, result, job.site_job_id, (job.title or "")[:50])
+        return result
 
     async def run(self) -> None:
-        counts = {"inserted": 0, "updated": 0, "unchanged": 0, "unknown": 0}
         try:
             await self.browser.start()
             self.repo.connect()
-            jobs = await self.scrape()
-            log.info("[{}] scraped {} jobs; writing to DB...", self.site, len(jobs))
-            for job in jobs:
-                result = self.save(job)
-                counts[result] = counts.get(result, 0) + 1
+            await self.scrape()  # each job is saved inline as it's scraped
             log.info(
                 "[{}] done — inserted={inserted} updated={updated} unchanged={unchanged}",
                 self.site,
-                **counts,
+                **self.counts,
             )
         finally:
             await self.browser.close()

@@ -5,3 +5,6 @@ __pycache__/
 sessions/
 logs/
 screenshots/
+
+# scratch/test artifacts
+scratch_*

@@ -327,23 +327,23 @@ class IndeedScraper(BaseScraper):
                 company = detail.get("company") or company
                 company_url = detail.get("company_url")
 
-            jobs.append(
-                ScrapedJob(
-                    site_job_id=jk,
-                    title=item.get("title", "") or "(no title)",
-                    description=description,
-                    link=self._job_url(jk),
-                    company=company,
-                    company_url=company_url,
-                    job_type=job_type,
-                    remote=remote,
-                    location=location,
-                    posted_at=compute_posted_at(item.get("posted"), item.get("pubDate")),
-                    apply_url=apply_url,
-                )
+            job = ScrapedJob(
+                site_job_id=jk,
+                title=item.get("title", "") or "(no title)",
+                description=description,
+                link=self._job_url(jk),
+                company=company,
+                company_url=company_url,
+                job_type=job_type,
+                remote=remote,
+                location=location,
+                posted_at=compute_posted_at(item.get("posted"), item.get("pubDate")),
+                apply_url=apply_url,
             )
+            self.save(job)  # persist this job immediately, one by one
+            jobs.append(job)
         log.info(
-            "This page: {} new job(s) to fetch, {} already stored (detail skipped).",
+            "This page: {} new job(s) fetched & saved, {} already stored (detail skipped).",
             len(jobs),
             skipped,
         )
