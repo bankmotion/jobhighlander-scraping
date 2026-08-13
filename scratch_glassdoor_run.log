@@ -1,0 +1,21 @@
+[32m2026-08-13 04:43:54[0m | [1mINFO    [0m | [1mStarting scraper for 'glassdoor'[0m
+[32m2026-08-13 04:43:55[0m | [1mINFO    [0m | [1mProxy pre-flight: remembered session 'gdp21ad2ov' still reaches brunhild.challenges.cloudflare.com [OK][0m
+[32m2026-08-13 04:43:56[0m | [1mINFO    [0m | [1mLocal routing proxy on 127.0.0.1:54784 (direct: google.com, gstatic.com, googleusercontent.com, googleapis.com)[0m
+[32m2026-08-13 04:43:56[0m | [1mINFO    [0m | [1mRouting via local split-tunnel proxy -> upstream geo.iproyal.com[0m
+[32m2026-08-13 04:43:56[0m | [1mINFO    [0m | [1mStealth browser started (headless=False, profile=C:\Users\Administrator\Documents\JobHighLander\job-seeking\sessions\glassdoor-chrome-profile)[0m
+[32m2026-08-13 04:43:56[0m | [1mINFO    [0m | [1mConnected to MySQL localhost:3306/jobhighlander[0m
+[32m2026-08-13 04:43:56[0m | [1mINFO    [0m | [1mLoaded 29 cookies from C:\Users\Administrator\Documents\JobHighLander\job-seeking\sessions\google_session.json[0m
+[32m2026-08-13 04:43:56[0m | [1mINFO    [0m | [1mLoaded 30 cookies from C:\Users\Administrator\Documents\JobHighLander\job-seeking\sessions\glassdoor_session.json[0m
+[32m2026-08-13 04:43:56[0m | [1mINFO    [0m | [1mNavigating to https://www.glassdoor.com/[0m
+[32m2026-08-13 04:44:07[0m | [1mINFO    [0m | [1mClicked Turnstile (1/2) at ~8s — widget 300x65, click=(696,389)[0m
+[32m2026-08-13 04:44:12[0m | [1mINFO    [0m | [1mCheckpoint cleared after ~12s (title='Loading https://www.glassdoor.com/index.htm')[0m
+[32m2026-08-13 04:44:18[0m | [32m[1mSUCCESS [0m | [32m[1mAlready logged in to Glassdoor.[0m
+[32m2026-08-13 04:44:18[0m | [1mINFO    [0m | [1mNavigating to https://www.glassdoor.com/[0m
+[32m2026-08-13 04:44:27[0m | [1mINFO    [0m | [1mClicked Turnstile (1/2) at ~8s — widget 300x65, click=(691,389)[0m
+[32m2026-08-13 04:44:34[0m | [1mINFO    [0m | [1mCheckpoint cleared after ~14s (title='Loading https://www.glassdoor.com/home')[0m
+[32m2026-08-13 04:44:43[0m | [1mINFO    [0m | [1mNavigating to https://www.glassdoor.com/Job/software-engineer-jobs-SRCH_KO0,17.htm[0m
+[32m2026-08-13 04:45:20[0m | [1mINFO    [0m | [1mFound 97 result cards (97 unique) on the listing page[0m
+[32m2026-08-13 04:45:20[0m | [1mINFO    [0m | [1mSaved session -> C:\Users\Administrator\Documents\JobHighLander\job-seeking\sessions\glassdoor_session.json (29 cookies)[0m
+[32m2026-08-13 04:45:24[0m | [1mINFO    [0m | [1mNavigating to https://www.glassdoor.com/job-listing/software-engineer-ii-java-jpmorgan-chase-co-JV_IC1132348_KO0,25_KE26,43.htm?jl=1010227825715[0m
+[32m2026-08-13 04:45:49[0m | [1mINFO    [0m | [1mNavigating to https://www.glassdoor.com/job-listing/experienced-software-engineer-java-python-full-stack-or-back-end-jpmorgan-chase-co-JV_IC1126819_KO0,64_KE65,82.htm?jl=1010228103316[0m
+[32m2026-08-13 04:46:13[0m | [1mINFO    [0m | [1mNavigating to https://www.glassdoor.com/job-listing/sr-associate-engineer-engineer-it-software-american-airlines-JV_IC1139993_KO0,42_KE43,60.htm?jl=1010227745836[0m

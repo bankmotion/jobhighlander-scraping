@@ -1,0 +1,21 @@
+# ── Stealth browser stack (proven anti-Cloudflare setup) ──
+patchright==1.61.1
+python-dotenv==1.0.0
+loguru==0.7.2
+pydantic>=2.10.3,<3.0.0
+pydantic-settings>=2.7.0,<3.0.0
+
+# ── Google APIs (reserved for Gmail-OTP login flow, added later if needed) ──
+google-auth==2.35.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+google-api-python-client==2.149.0
+
+# ── Async / runtime ──
+aiohttp==3.13.2
+greenlet>=3.4.0
+tzdata
+
+# ── This project: MySQL writer + HTML parsing ──
+PyMySQL==1.1.1
+beautifulsoup4==4.12.3
