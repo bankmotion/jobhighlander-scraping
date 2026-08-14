@@ -13,6 +13,7 @@ never contend for a browser-profile lock).
 import asyncio
 import sys
 
+from config import settings
 from logger import log
 from scraper.glassdoor import GlassdoorScraper
 from scraper.indeed import IndeedScraper
@@ -26,12 +27,23 @@ SCRAPERS = {
 }
 
 
+def enabled_sites() -> list[str]:
+    """Registered sites whose ENABLE_<SITE> flag is on (order preserved)."""
+    flags = {
+        "indeed": settings.enable_indeed,
+        "glassdoor": settings.enable_glassdoor,
+        "jobright": settings.enable_jobright,
+    }
+    return [s for s in SCRAPERS if flags.get(s, True)]
+
+
 def resolve_sites(argv: list[str]) -> list[str]:
-    """Turn CLI args into an ordered site list. 'all' expands to every scraper;
-    no args defaults to indeed. Duplicates are de-duped, order preserved."""
-    args = [a.lower() for a in argv] or ["indeed"]
+    """Turn CLI args into an ordered site list. No args or 'all' → the ENABLED
+    sites; explicitly named sites run regardless of their flag (for testing).
+    Duplicates de-duped, order preserved."""
+    args = [a.lower() for a in argv] or ["all"]
     if "all" in args:
-        return list(SCRAPERS.keys())
+        return enabled_sites()
     seen: set[str] = set()
     out: list[str] = []
     for s in args:
@@ -57,6 +69,9 @@ async def run_site(site: str) -> bool:
 
 async def main() -> None:
     sites = resolve_sites(sys.argv[1:])
+    if not sites:
+        log.warning("No sites to scrape — all ENABLE_* flags are off.")
+        return
     log.info("Sites to scrape (in order): {}", ", ".join(sites))
 
     results: dict[str, bool] = {}

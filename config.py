@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     google_password: Optional[str] = None
     google_session_file: str = str(BASE_DIR / "sessions" / "google_session.json")
 
+    # ── Enabled scrapers (gate what `main.py all` and the scheduler run).
+    #    Explicitly naming a site on the CLI runs it regardless (for testing). ──
+    enable_indeed: bool = True
+    enable_glassdoor: bool = False  # off: needs a proxy IP that can reach brunhild
+    enable_jobright: bool = True
+
     # ── Indeed scraper ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
     indeed_session_file: str = str(BASE_DIR / "sessions" / "indeed_session.json")

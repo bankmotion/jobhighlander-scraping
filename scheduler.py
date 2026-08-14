@@ -39,7 +39,8 @@ def _run_once(sites: list[str]) -> None:
 
 
 def main() -> None:
-    sites = [a.lower() for a in sys.argv[1:]] or ["indeed"]
+    # Default 'all' → main.py runs the ENABLED sites (ENABLE_* in .env).
+    sites = [a.lower() for a in sys.argv[1:]] or ["all"]
     lo = min(settings.schedule_min_hours, settings.schedule_max_hours)
     hi = max(settings.schedule_min_hours, settings.schedule_max_hours)
     log.info("Scheduler started — running [{}] with a random {:.2f}–{:.2f}h gap between runs.", ", ".join(sites), lo, hi)
