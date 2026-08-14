@@ -48,7 +48,7 @@ class BaseScraper:
         self.browser = StealthBrowser(user_data_dir=self.user_data_dir, proxy_url=self.proxy_url)
         self.repo = JobRepository(table=self.table)
         #: Running write totals, updated by save() as each job is persisted.
-        self.counts = {"inserted": 0, "updated": 0, "unchanged": 0, "unknown": 0}
+        self.counts = {"inserted": 0, "updated": 0, "unchanged": 0, "unknown": 0, "skipped": 0}
 
     async def scrape(self) -> list[ScrapedJob]:
         """Scrape the site, calling `self.save(job)` for EACH job as it completes
@@ -58,7 +58,15 @@ class BaseScraper:
     def save(self, job: ScrapedJob) -> str:
         """Upsert ONE job right away (the DB connection autocommits), and update
         the running counts. Called per-job by the scrapers so every finished job
-        is persisted immediately instead of being batched at the end of the run."""
+        is persisted immediately instead of being batched at the end of the run.
+
+        The apply URL is required: a listing with no way to apply is useless, so
+        if detail-fetching didn't yield an apply_url we skip the job entirely
+        (never write it to the DB) and count it as "skipped"."""
+        if not (job.apply_url and job.apply_url.strip()):
+            self.counts["skipped"] += 1
+            log.info("[{}] skipped (no apply url) — {} ({})", self.site, (job.title or "")[:50], job.site_job_id)
+            return "skipped"
         result = self.repo.upsert_job(
             site=self.site,
             site_job_id=job.site_job_id,
@@ -84,7 +92,7 @@ class BaseScraper:
             self.repo.connect()
             await self.scrape()  # each job is saved inline as it's scraped
             log.info(
-                "[{}] done — inserted={inserted} updated={updated} unchanged={unchanged}",
+                "[{}] done — inserted={inserted} updated={updated} unchanged={unchanged} skipped={skipped}",
                 self.site,
                 **self.counts,
             )
