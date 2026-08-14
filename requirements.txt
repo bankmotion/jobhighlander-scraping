@@ -1,5 +1,5 @@
 # ── Stealth browser stack (proven anti-Cloudflare setup) ──
-patchright==1.61.1
+patchright==1.61.2
 python-dotenv==1.0.0
 loguru==0.7.2
 pydantic>=2.10.3,<3.0.0
@@ -19,3 +19,4 @@ tzdata
 # ── This project: MySQL writer + HTML parsing ──
 PyMySQL==1.1.1
 beautifulsoup4==4.12.3
+curl_cffi==0.16.0

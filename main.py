@@ -18,11 +18,13 @@ from logger import log
 from scraper.glassdoor import GlassdoorScraper
 from scraper.indeed import IndeedScraper
 from scraper.jobright import JobRightScraper
+from scraper.weworkremotely import WeWorkRemotelyScraper
 
 SCRAPERS = {
     "indeed": IndeedScraper,
     "glassdoor": GlassdoorScraper,
     "jobright": JobRightScraper,
+    "weworkremotely": WeWorkRemotelyScraper,
     # Add more sites here as their links arrive — each reuses the same core.
 }
 
@@ -33,6 +35,7 @@ def enabled_sites() -> list[str]:
         "indeed": settings.enable_indeed,
         "glassdoor": settings.enable_glassdoor,
         "jobright": settings.enable_jobright,
+        "weworkremotely": settings.enable_weworkremotely,
     }
     return [s for s in SCRAPERS if flags.get(s, True)]
 
