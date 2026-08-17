@@ -56,6 +56,7 @@ import asyncio
 import json
 import random
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -72,6 +73,33 @@ _JUNK_HOST_RE = re.compile(
     r"linkedin\.com/(company|feed)|instagram\.|youtube\.|t\.me|discord\.|apple\.com|play\.google)",
     re.I,
 )
+
+
+def _is_employer_url(url: str) -> bool:
+    """True if `url` looks like a real employer/ATS link.
+
+    Match on scheme+host+path ONLY, never the query string: Himalayas appends
+    `?utm_source=himalayas.app&utm_medium=himalayas.app` to the destination, so
+    testing the whole URL rejected every genuine employer link it ever found.
+    """
+    if not url or not url.startswith("http"):
+        return False
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False
+    if not p.hostname:
+        return False
+    return not _JUNK_HOST_RE.search(f"{p.scheme}://{p.netloc}{p.path}")
+
+
+def _off_himalayas(url: str) -> bool:
+    """Host-based check — again, the utm_* params carry 'himalayas.app'."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return bool(host) and not host.endswith("himalayas.app")
 
 
 # ── DB helpers (lazy pymysql; creds from the project config) ─────────────────
@@ -91,9 +119,13 @@ def fetch_pending(limit: int) -> list[dict]:
     conn = _connect()
     try:
         with conn.cursor() as cur:
+            # Prefix match, NOT '%himalayas.app%': a RESOLVED row's employer URL
+            # still carries `utm_source=himalayas.app`, so a substring match would
+            # drag every already-done job back into the queue.
             cur.execute(
                 "SELECT id, apply_url FROM jobs "
-                "WHERE site='himalayas' AND (apply_url LIKE '%%himalayas.app%%' OR apply_url IS NULL) "
+                "WHERE site='himalayas' AND (apply_url LIKE 'https://himalayas.app/%%' "
+                "                            OR apply_url IS NULL OR apply_url = '') "
                 "ORDER BY id DESC" + (" LIMIT %s" if limit else ""),
                 ((limit,) if limit else ()),
             )
@@ -136,7 +168,7 @@ async def _external_from_next_data(page) -> str | None:
                 "externalApplyUrl", "applicationLink", "url"):
         for hit in re.findall(rf'"{key}":"([^"]{{8,200}})"', blob):
             u = hit.replace("\\u002F", "/").replace("\\/", "/")
-            if u.startswith("http") and not _JUNK_HOST_RE.search(u):
+            if _is_employer_url(u):
                 return u
     return None
 
@@ -157,13 +189,13 @@ async def _click_capture(page, ctx, handle) -> str | None:
             await popup.close()
         except Exception:
             pass
-        if url and url.startswith("http") and not _JUNK_HOST_RE.search(url):
+        if _is_employer_url(url):
             return url
     except Exception:
         pass
     # same-tab navigation / redirect
     try:
-        if page.url != before and page.url.startswith("http") and not _JUNK_HOST_RE.search(page.url):
+        if page.url != before and _is_employer_url(page.url):
             return page.url
     except Exception:
         pass
@@ -187,19 +219,97 @@ async def _is_login_gated(page) -> bool:
     return bool(hrefs) and all(re.search(r"/(signup|login|signin)\b", h) for h in hrefs)
 
 
+async def _follow_apply_redirect(ctx, apply_url: str) -> str | None:
+    """`himalayas.app/apply/<code>` 302s to the employer's own ATS. Follow it in a
+    throwaway tab and keep the destination (Workday/Greenhouse/Lever/…)."""
+    tab = await ctx.new_page()
+    try:
+        await tab.goto(apply_url, wait_until="domcontentloaded", timeout=45000)
+        for _ in range(8):  # the hop can take a moment to settle
+            await asyncio.sleep(1.5)
+            if _off_himalayas(tab.url):
+                break
+        final = tab.url
+        return final if _is_employer_url(final) else None
+    except Exception:
+        return None
+    finally:
+        try:
+            await tab.close()
+        except Exception:
+            pass
+
+
+async def _apply_via_modal(page, ctx) -> str | None:
+    """The signed-in flow, and the ONLY one that yields the employer URL.
+
+    Clicking "Apply now" opens a cover-letter upsell modal; its "I'm ready to
+    apply" link is `himalayas.app/apply/<code>`, which redirects to the employer's
+    real application. The code appears nowhere in the served DOM — it only exists
+    once the modal is opened — so this has to be driven, not scraped.
+    """
+    async def _modal_href() -> str:
+        return await page.evaluate(
+            """() => {
+                const inModal = Array.from(document.querySelectorAll(
+                    '[role=dialog] a, [class*=modal i] a, [class*=Modal] a'));
+                const any = inModal.length ? inModal : Array.from(document.querySelectorAll('a'));
+                const hit = any.find(e => /ready to apply/i.test(e.textContent || '')
+                                       || /\\/apply\\//.test(e.getAttribute('href') || ''));
+                return hit ? hit.href : '';
+            }"""
+        )
+
+    # The page is React — a button that exists isn't necessarily wired yet, so a
+    # too-early click silently does nothing. Retry across the visible buttons.
+    for attempt in range(3):
+        if await _modal_href():  # already open from a previous attempt
+            break
+        try:
+            buttons = await page.query_selector_all("button:has-text('Apply')")
+        except Exception:
+            buttons = []
+        clicked = False
+        for b in buttons:
+            try:
+                if not await b.is_visible():
+                    continue
+                await b.click(timeout=6000)
+                clicked = True
+                break
+            except Exception:
+                continue
+        if not clicked and attempt == 2:
+            return None
+        for _ in range(5):  # wait for the modal to mount
+            await asyncio.sleep(1.0)
+            if await _modal_href():
+                break
+        if await _modal_href():
+            break
+        await asyncio.sleep(1.5)  # let hydration finish, then try again
+
+    href = await _modal_href()
+    return await _follow_apply_redirect(ctx, href) if href else None
+
+
 async def extract_apply(page, ctx) -> str | None:
     # 1) an "Apply"-labelled anchor pointing straight off-site
     anchors = await page.eval_on_selector_all(
         "a", "els => els.map(e => ({t:(e.textContent||'').trim(), h:e.href, rel:e.rel||''}))")
     apply_anchors = [a for a in anchors if re.search(r"\bapply\b", (a["t"] + " " + a["rel"]), re.I)]
     for a in apply_anchors:
-        if a["h"].startswith("http") and not _JUNK_HOST_RE.search(a["h"]):
+        if _is_employer_url(a["h"]):
             return a["h"]
-    # 2) __NEXT_DATA__ embedded URL
+    # 2) signed-in modal -> /apply/<code> -> employer ATS (the one that works)
+    via_modal = await _apply_via_modal(page, ctx)
+    if via_modal:
+        return via_modal
+    # 3) __NEXT_DATA__ embedded URL
     nxt = await _external_from_next_data(page)
     if nxt:
         return nxt
-    # 3) click an Apply control and capture where it goes
+    # 4) click an Apply control and capture where it goes
     for sel in ("a:has-text('Apply')", "button:has-text('Apply')",
                 "a:has-text('apply')", "[href*='apply']"):
         try:
@@ -309,6 +419,28 @@ def _launch_real_chrome(args) -> tuple:
     )
 
 
+def _kill_chrome_tree(proc) -> None:
+    """Kill Chrome AND its renderers.
+
+    `proc.terminate()` only ends the parent; every renderer child is orphaned and
+    keeps its memory. Across a few long runs that leaked ~35 processes / 3.7 GB
+    here, which starved the Playwright driver and made it die mid-run ("Connection
+    closed while reading from the driver")."""
+    if proc is None:
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+        else:
+            proc.terminate()
+    except Exception:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+
 async def _wait_manual(page, seconds: int) -> bool:
     """Let a HUMAN solve the challenge in the open window. Never uses input() —
     that blocks the asyncio loop and wedges patchright's driver."""
@@ -362,17 +494,53 @@ async def resolve_all(jobs: list[dict], args) -> list[dict]:
     gated = 0
     proc = None
     pw = await async_playwright().start()
-    if args.real_chrome or args.cdp:
-        endpoint = args.cdp
-        if not endpoint:
-            proc, endpoint = _launch_real_chrome(args)
-        browser = await pw.chromium.connect_over_cdp(endpoint)
-        ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-    else:
-        ctx = await pw.chromium.launch_persistent_context(**launch)
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-    page.set_default_timeout(60000)
+
+    async def _open_browser():
+        """(ctx, page, proc) for a fresh browser session."""
+        nonlocal proc
+        if args.real_chrome or args.cdp:
+            endpoint = args.cdp
+            if not endpoint:
+                proc, endpoint = _launch_real_chrome(args)
+            browser = await pw.chromium.connect_over_cdp(endpoint)
+            c = browser.contexts[0] if browser.contexts else await browser.new_context()
+            p = c.pages[0] if c.pages else await c.new_page()
+        else:
+            c = await pw.chromium.launch_persistent_context(**launch)
+            p = c.pages[0] if c.pages else await c.new_page()
+        p.set_default_timeout(60000)
+        return c, p
+
+    ctx, page = await _open_browser()
+
+    def _browser_died(exc: Exception) -> bool:
+        """Chrome/CDP went away — every later call would fail the same way."""
+        return any(s in str(exc) for s in (
+            "Connection closed", "Target closed", "Browser closed",
+            "has been closed", "Target page, context or browser has been closed",
+        ))
+
+    async def _reconnect() -> bool:
+        """Relaunch Chrome after a crash so the rest of the queue isn't wasted."""
+        nonlocal ctx, page, proc, pw
+        print("      browser connection died — restarting driver + Chrome...")
+        _kill_chrome_tree(proc)
+        proc = None
+        # "Connection closed while reading from the driver" means the Playwright
+        # NODE process died too, so reconnecting with the old handle can't work —
+        # the driver itself has to be restarted.
+        try:
+            await pw.stop()
+        except Exception:
+            pass
+        await asyncio.sleep(3)
+        try:
+            pw = await async_playwright().start()
+            ctx, page = await _open_browser()
+            return True
+        except Exception as e:
+            print("      relaunch failed:", str(e)[:70])
+            return False
     try:
         for i, job in enumerate(jobs, 1):
             url = job["url"]
@@ -415,15 +583,28 @@ async def resolve_all(jobs: list[dict], args) -> list[dict]:
                     await _dump(page, job["id"])
             except Exception as e:
                 print(f"[{i}/{len(jobs)}] id={job['id']} error: {str(e)[:80]}")
+                # A dead browser fails EVERY remaining job identically, so
+                # relaunch and retry this one instead of burning the queue.
+                if _browser_died(e):
+                    if not await _reconnect():
+                        print("      giving up — re-run to continue where this left off")
+                        break
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                        if await clear_challenge(page, max_wait_s=args.cf_wait):
+                            await _settle(page)
+                            retry_url = await extract_apply(page, ctx)
+                            if retry_url:
+                                resolved.append({"id": job["id"], "apply_url": retry_url})
+                                print(f"      recovered -> {retry_url[:70]}")
+                    except Exception as e2:
+                        print("      retry after relaunch failed:", str(e2)[:60])
             if i < len(jobs):  # don't machine-gun the next page
                 await asyncio.sleep(random.uniform(2.0, 5.0))
     finally:
         if proc is not None and not args.keep_open:
-            # Only ever kill a Chrome WE launched.
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+            # Only ever kill a Chrome WE launched — tree-kill so no renderer leaks.
+            _kill_chrome_tree(proc)
         elif not (args.real_chrome or args.cdp):
             try:
                 await ctx.close()
