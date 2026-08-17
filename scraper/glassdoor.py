@@ -488,7 +488,13 @@ class GlassdoorScraper(BaseScraper):
                 continue
 
             location = (item.get("location") or "").strip()
-            remote = "remote" in location.lower()
+            # A remote-filtered search (the URL itself says "remote") means every
+            # result is remote; otherwise fall back to the location/title text.
+            remote = (
+                "remote" in settings.glassdoor_search_url.lower()
+                or "remote" in location.lower()
+                or "remote" in (item.get("title") or "").lower()
+            )
             description = item.get("snippet", "")
             company = item.get("company") or None
             company_url = None

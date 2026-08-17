@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     capture_apply_url: bool = True
 
     # ── Glassdoor (own Chrome profile; probes proxy for a challenge-capable exit IP) ──
-    glassdoor_search_url: str = "https://www.glassdoor.com/Job/software-engineer-jobs-SRCH_KO0,17.htm"
+    glassdoor_search_url: str = "https://www.glassdoor.com/Job/united-states-remote-software-engineer-jobs-SRCH_IL.0,13_IN1_KO14,38.htm"
     glassdoor_session_file: str = str(BASE_DIR / "sessions" / "glassdoor_session.json")
     glassdoor_user_data_dir: str = str(BASE_DIR / "sessions" / "glassdoor-chrome-profile")
     glassdoor_proxy_url: Optional[str] = None
