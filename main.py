@@ -12,9 +12,11 @@ never contend for a browser-profile lock).
 """
 import asyncio
 import sys
+import traceback
 
 from config import settings
 from logger import log
+from scraper.db import ScrapeRunRepo
 from scraper.glassdoor import GlassdoorScraper
 from scraper.indeed import IndeedScraper
 from scraper.jobright import JobRightScraper
@@ -65,12 +67,20 @@ async def run_site(site: str) -> bool:
         log.error("Unknown site '{}'. Available: {}, all", site, ", ".join(SCRAPERS))
         return False
     log.info("Starting scraper for '{}'", site)
+    # Log the run to scrape_runs so super-admins can see status/counts in the app.
+    run_log = ScrapeRunRepo()
+    run_id = run_log.start(site)
+    scraper = scraper_cls()
     try:
-        await scraper_cls().run()
+        await scraper.run()
+        run_log.finish(run_id, "success", scraper.counts)
         return True
     except Exception:
         log.exception("Scraper '{}' failed", site)
+        run_log.finish(run_id, "failed", scraper.counts, error=traceback.format_exc()[-2000:])
         return False
+    finally:
+        run_log.close()
 
 
 async def main() -> None:

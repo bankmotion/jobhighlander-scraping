@@ -112,3 +112,69 @@ class JobRepository:
 
     def __exit__(self, *_exc) -> None:
         self.close()
+
+
+class ScrapeRunRepo:
+    """Logs one row per scraper run to `scrape_runs`. Uses its own connection so
+    it's independent of the per-site JobRepository lifecycle (which opens/closes
+    inside each scraper's run())."""
+
+    def __init__(self):
+        self._conn: Optional[pymysql.connections.Connection] = None
+
+    def _cursor(self):
+        if self._conn is None:
+            self._conn = pymysql.connect(
+                host=settings.db_host,
+                port=settings.db_port,
+                user=settings.db_user,
+                password=settings.db_password,
+                database=settings.db_name,
+                charset="utf8mb4",
+                autocommit=True,
+            )
+        return self._conn.cursor()
+
+    def start(self, site: str) -> Optional[int]:
+        """Insert a 'running' row; returns its id (or None if logging failed)."""
+        try:
+            with self._cursor() as cur:
+                cur.execute(
+                    "INSERT INTO scrape_runs (site, status, started_at, created_at) "
+                    "VALUES (%s, 'running', UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))",
+                    (site,),
+                )
+                return cur.lastrowid
+        except Exception as e:
+            log.warning("scrape_runs start failed: {}", e)
+            return None
+
+    def finish(self, run_id: Optional[int], status: str, counts: dict, error: Optional[str] = None) -> None:
+        """Mark a run finished with its final status + counts."""
+        if run_id is None:
+            return
+        try:
+            with self._cursor() as cur:
+                cur.execute(
+                    "UPDATE scrape_runs SET status=%s, finished_at=UTC_TIMESTAMP(3), "
+                    "inserted=%s, updated=%s, unchanged=%s, skipped=%s, error=%s WHERE id=%s",
+                    (
+                        status,
+                        int(counts.get("inserted", 0)),
+                        int(counts.get("updated", 0)),
+                        int(counts.get("unchanged", 0)),
+                        int(counts.get("skipped", 0)),
+                        (error or None),
+                        run_id,
+                    ),
+                )
+        except Exception as e:
+            log.warning("scrape_runs finish failed: {}", e)
+
+    def close(self) -> None:
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
