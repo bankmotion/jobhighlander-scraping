@@ -8,3 +8,9 @@ screenshots/
 
 # scratch/test artifacts
 scratch_*
+
+# browser profiles created by the CF tools
+*-profile/
+# transient resolver export/import batches
+*_pending.json
+*_resolved.json

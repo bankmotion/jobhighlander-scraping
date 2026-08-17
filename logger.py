@@ -10,6 +10,15 @@ _LOGS_DIR = Path(__file__).resolve().parent / "logs"
 
 
 def setup_logger():
+    # Windows consoles default to cp1252, which makes loguru raise
+    # UnicodeEncodeError when a message (e.g. a job title) has characters outside
+    # that codepage. Force UTF-8 with a safe fallback so no log line is ever lost.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     logger.remove()
     logger.add(
         sys.stdout,
