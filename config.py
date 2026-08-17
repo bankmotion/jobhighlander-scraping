@@ -88,10 +88,12 @@ class Settings(BaseSettings):
     remoteok_role_regex: str = r"engineer|developer|software|programmer|full.?stack|back.?end|front.?end|devops"
     remoteok_user_data_dir: str = str(BASE_DIR / "sessions" / "remoteok-chrome-profile")
 
-    # ── Himalayas (public JSON API; no login/browser; jobs_temp until promoted) ──
+    # ── Himalayas (public JSON API; browser only for apply-URL resolution) ──
     himalayas_api_url: str = "https://himalayas.app/jobs/api"
     himalayas_country: str = "United States"  # matches the API's locationRestrictions
     himalayas_role_regex: str = r"engineer|developer|software|programmer"
+    himalayas_use_proxy: bool = True  # route the API + resolver through the residential proxy
+    himalayas_resolve_apply: bool = True  # 2nd pass: browser resolves real employer apply URLs
 
     # ── Scheduler (random gap between runs, hours) ──
     schedule_min_hours: float = 1.0
@@ -115,6 +117,7 @@ DB_MANAGED_KEYS: tuple = (
     "weworkremotely_max_per_company",
     "enable_remoteok", "remoteok_api_url",
     "enable_himalayas", "himalayas_api_url", "himalayas_country", "himalayas_role_regex",
+    "himalayas_use_proxy", "himalayas_resolve_apply",
 )
 
 

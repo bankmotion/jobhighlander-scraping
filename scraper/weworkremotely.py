@@ -148,9 +148,22 @@ class WeWorkRemotelyScraper(BaseScraper):
         self._proxies = None
         if settings.weworkremotely_use_proxy and settings.proxy_url:
             self._proxies = {"http": settings.proxy_url, "https": settings.proxy_url}
+        self._cookies = {}  # filled in run() — may need an interactive sign-in
 
     # ── HTTP-only lifecycle (override the browser-based BaseScraper.run) ──────
     async def run(self) -> None:
+        # Some employers (Toptal et al.) only show the real apply URL to a
+        # signed-in job seeker; logged out those postings yield no apply_url and
+        # get skipped. ensure_session() reuses the DB session and only opens a
+        # browser when there isn't one. (WWR's big-name postings sit behind its
+        # PAID plan — /job-seekers/onboarding/step_3?context=paywall — which no
+        # sign-in can unlock.)
+        try:
+            from scraper.auth.site_login import ensure_session
+            self._cookies = await ensure_session("weworkremotely")
+        except Exception as e:
+            log.warning("[wwr] sign-in skipped: {}", e)
+            self._cookies = {}
         self.repo.connect()
         try:
             await self.scrape()
@@ -183,7 +196,8 @@ class WeWorkRemotelyScraper(BaseScraper):
         # how many SAVED jobs any one company contributes per run.
         cap = settings.weworkremotely_max_per_company
         saved_by_company: Counter = Counter()
-        async with AsyncSession(impersonate=_IMPERSONATE, proxies=self._proxies) as session:
+        async with AsyncSession(impersonate=_IMPERSONATE, proxies=self._proxies,
+                                cookies=self._cookies or None) as session:
             listing = await self._get(session, self.listing_url)
             if not listing:
                 log.error("[wwr] could not load listing {}", self.listing_url)
