@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
     indeed_session_file: str = str(BASE_DIR / "sessions" / "indeed_session.json")
     max_jobs: int = 25
+    indeed_max_pages: int = 10  # paginate the results (&start=N); stops early if exhausted or max_jobs hit
     fetch_descriptions: bool = True
     capture_apply_url: bool = True
 

@@ -15,6 +15,7 @@ import asyncio
 import random
 import re
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from config import settings
 from logger import log
@@ -284,81 +285,100 @@ class IndeedScraper(BaseScraper):
         except Exception as exc:
             log.warning("Login step failed, continuing anonymously: {}", exc)
 
-        ok = await self.browser.goto(settings.indeed_search_url)
-        if not ok:
-            await self.browser.screenshot("screenshots/indeed_blocked.png")
-            log.error("Indeed appears to be gated by a checkpoint we couldn't clear.")
-
-        # Behave like a human skimming the results.
-        await human.human_scroll(self.browser.page, steps=random.randint(4, 8))
-        await human.think(settings.min_action_delay, settings.max_action_delay)
-
-        raw = await self.browser.page.evaluate(_EXTRACT_JS)
-        # Indeed repeats sponsored cards under the same jk — dedupe (keep order)
-        # so max_jobs counts UNIQUE postings.
-        seen: set[str] = set()
-        unique = []
-        for item in raw:
-            jk = item.get("jk")
-            if jk and jk not in seen:
-                seen.add(jk)
-                unique.append(item)
-        log.info("Found {} result cards ({} unique) on the listing page", len(raw), len(unique))
-        if not unique:
-            await self.browser.screenshot("screenshots/indeed_no_cards.png")
-
         # Skip jobs already in the DB — don't re-fetch their detail pages.
         existing = self.repo.existing_keys(self.site)
-
+        seen: set[str] = set()  # dedupe jk across ALL pages
         jobs: list[ScrapedJob] = []
         skipped = 0
-        for item in unique:
+
+        # Walk the results pages (Indeed paginates via &start=N), stopping early
+        # once max_jobs is reached or a page yields no new postings.
+        for page_num in range(settings.indeed_max_pages):
             if len(jobs) >= settings.max_jobs:
                 break
-            jk = item["jk"]
-            if jk in existing:
-                skipped += 1
-                continue
-            description = item.get("snippet", "")
-            # location / remote / job_type / company come from the reliable
-            # listing mosaic; the detail page only adds description, company_url,
-            # apply_url (and refines the company name).
-            company = item.get("company") or None
-            location = item.get("location") or None
-            job_type = item.get("jobType") or None
-            remote = bool(item.get("remote"))
-            company_url = None
-            apply_url = None
+            ok = await self.browser.goto(self._page_url(settings.indeed_search_url, page_num))
+            if not ok:
+                await self.browser.screenshot(f"screenshots/indeed_blocked_p{page_num + 1}.png")
+                log.error("Indeed page {} gated by a checkpoint we couldn't clear.", page_num + 1)
+                break
 
-            if settings.fetch_descriptions:
-                detail = await self._fetch_detail(jk)
-                description = detail.get("description") or description
-                apply_url = detail.get("apply_url")
-                company = detail.get("company") or company
-                company_url = detail.get("company_url")
+            # Behave like a human skimming the results.
+            await human.human_scroll(self.browser.page, steps=random.randint(4, 8))
+            await human.think(settings.min_action_delay, settings.max_action_delay)
 
-            job = ScrapedJob(
-                site_job_id=jk,
-                title=item.get("title", "") or "(no title)",
-                description=description,
-                link=self._job_url(jk),
-                company=company,
-                company_url=company_url,
-                job_type=job_type,
-                remote=remote,
-                location=location,
-                salary=item.get("salary") or None,
-                posted_at=compute_posted_at(item.get("posted"), item.get("pubDate")),
-                apply_url=apply_url,
+            raw = await self.browser.page.evaluate(_EXTRACT_JS)
+            # Indeed repeats sponsored cards under the same jk — dedupe across all
+            # pages so max_jobs counts UNIQUE postings.
+            new_cards = []
+            for item in raw:
+                jk = item.get("jk")
+                if jk and jk not in seen:
+                    seen.add(jk)
+                    new_cards.append(item)
+            log.info(
+                "Page {}/{}: {} cards, {} new unique",
+                page_num + 1, settings.indeed_max_pages, len(raw), len(new_cards),
             )
-            self.save(job)  # persist this job immediately, one by one
-            jobs.append(job)
-        log.info(
-            "This page: {} new job(s) fetched & saved, {} already stored (detail skipped).",
-            len(jobs),
-            skipped,
-        )
+            if not new_cards:
+                if page_num == 0:
+                    await self.browser.screenshot("screenshots/indeed_no_cards.png")
+                log.info("No new cards on page {} — end of results.", page_num + 1)
+                break
+
+            for item in new_cards:
+                if len(jobs) >= settings.max_jobs:
+                    break
+                jk = item["jk"]
+                if jk in existing:
+                    skipped += 1
+                    continue
+                description = item.get("snippet", "")
+                # location / remote / job_type / company come from the reliable
+                # listing mosaic; the detail page only adds description,
+                # company_url, apply_url (and refines the company name).
+                company = item.get("company") or None
+                location = item.get("location") or None
+                job_type = item.get("jobType") or None
+                remote = bool(item.get("remote"))
+                company_url = None
+                apply_url = None
+
+                if settings.fetch_descriptions:
+                    detail = await self._fetch_detail(jk)
+                    description = detail.get("description") or description
+                    apply_url = detail.get("apply_url")
+                    company = detail.get("company") or company
+                    company_url = detail.get("company_url")
+
+                job = ScrapedJob(
+                    site_job_id=jk,
+                    title=item.get("title", "") or "(no title)",
+                    description=description,
+                    link=self._job_url(jk),
+                    company=company,
+                    company_url=company_url,
+                    job_type=job_type,
+                    remote=remote,
+                    location=location,
+                    salary=item.get("salary") or None,
+                    posted_at=compute_posted_at(item.get("posted"), item.get("pubDate")),
+                    apply_url=apply_url,
+                )
+                self.save(job)  # persist this job immediately, one by one
+                jobs.append(job)
+
+        log.info("Indeed: {} new job(s) saved, {} already stored (skipped).", len(jobs), skipped)
         return jobs
+
+    @staticmethod
+    def _page_url(base: str, page_num: int) -> str:
+        """Indeed paginates via &start=N (10 results per page)."""
+        if page_num <= 0:
+            return base
+        u = urlparse(base)
+        q = parse_qs(u.query, keep_blank_values=True)
+        q["start"] = [str(page_num * 10)]
+        return urlunparse(u._replace(query=urlencode(q, doseq=True)))
 
     async def _fetch_detail(self, jk: str) -> dict:
         """Open the posting; read description, company, company link, job type,
