@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     enable_glassdoor: bool = False
     enable_jobright: bool = True
     enable_weworkremotely: bool = False
+    enable_remoteok: bool = False
 
     # ── Indeed ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
@@ -70,9 +71,18 @@ class Settings(BaseSettings):
     jobright_user_data_dir: str = str(BASE_DIR / "sessions" / "jobright-chrome-profile")
     jobright_proxy_url: Optional[str] = None
 
-    # ── WeWorkRemotely (public HTTP, no login/browser; writes to jobs_temp until promoted) ──
-    weworkremotely_search_url: str = "https://weworkremotely.com/remote-jobs/search?term=senior+software+engineer"
+    # ── WeWorkRemotely (public HTTP, no login/browser; writes to jobs_temp until promoted).
+    #    The category page (not the /search endpoint) carries the apply-exposed
+    #    employers; big-name "senior" search results are login-gated & get skipped. ──
+    weworkremotely_search_url: str = "https://weworkremotely.com/remote-software-developer-jobs"
     weworkremotely_use_proxy: bool = True
+    weworkremotely_max_per_company: int = 3
+
+    # ── RemoteOK (public JSON API + browser apply-URL resolution; jobs_temp until promoted) ──
+    remoteok_api_url: str = "https://remoteok.com/api?order_by=date"
+    remoteok_max_age_days: int = 7
+    remoteok_role_regex: str = r"engineer|developer|software|programmer|full.?stack|back.?end|front.?end|devops"
+    remoteok_user_data_dir: str = str(BASE_DIR / "sessions" / "remoteok-chrome-profile")
 
     # ── Scheduler (random gap between runs, hours) ──
     schedule_min_hours: float = 1.0

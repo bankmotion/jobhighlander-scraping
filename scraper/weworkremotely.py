@@ -21,6 +21,7 @@ import html as _html
 import json
 import random
 import re
+from collections import Counter
 from datetime import datetime
 from typing import Optional
 
@@ -81,16 +82,25 @@ def _salary(base) -> Optional[str]:
         return None
     val = base.get("value")
     cur = (base.get("currency") or "").strip()
+
+    def _num(x) -> int:
+        try:
+            return int(float(x))
+        except (TypeError, ValueError):
+            return 0
+
     if isinstance(val, dict):
-        mn, mx = val.get("minValue"), val.get("maxValue")
+        mn, mx = _num(val.get("minValue")), _num(val.get("maxValue"))
         unit = (val.get("unitText") or "").strip().lower()
         per = {"year": "/yr", "hour": "/hr", "month": "/mo", "week": "/wk", "day": "/day"}.get(unit, "")
-        if mn and mx:
-            return f"{cur} {mn}–{mx}{per}".strip()
+        if mn and mx:  # 0 / missing → no salary (not "USD 0–0")
+            return f"{cur} {mn:,}–{mx:,}{per}".strip()
         if mn or mx:
-            return f"{cur} {mn or mx}{per}".strip()
-    elif val:
-        return f"{cur} {val}".strip()
+            return f"{cur} {(mn or mx):,}{per}".strip()
+    else:
+        n = _num(val)
+        if n:
+            return f"{cur} {n:,}".strip()
     return None
 
 
@@ -122,8 +132,8 @@ def _location(jp: dict) -> Optional[str]:
 
 class WeWorkRemotelyScraper(BaseScraper):
     site = "weworkremotely"
-    #: Promote to "jobs" once verified; write to the test table for now.
-    table = "jobs_temp"
+    #: Promoted to the live table — WWR jobs show in the app alongside the others.
+    table = "jobs"
 
     BASE = "https://weworkremotely.com"
 
@@ -163,6 +173,10 @@ class WeWorkRemotelyScraper(BaseScraper):
             return None
 
     async def scrape(self) -> None:
+        # A single staffing agency (e.g. Proxify) can flood the listing, so cap
+        # how many SAVED jobs any one company contributes per run.
+        cap = settings.weworkremotely_max_per_company
+        saved_by_company: Counter = Counter()
         async with AsyncSession(impersonate=_IMPERSONATE, proxies=self._proxies) as session:
             listing = await self._get(session, self.listing_url)
             if not listing:
@@ -172,12 +186,18 @@ class WeWorkRemotelyScraper(BaseScraper):
             limit = settings.max_jobs
             log.info("[wwr] {} jobs on listing; scraping up to {}", len(slugs), limit)
 
-            for i, slug in enumerate(slugs[:limit]):
+            for slug in slugs[:limit]:
                 detail = await self._get(session, self.BASE + slug)
                 if detail:
                     job = self._parse_detail(detail, slug)
                     if job:
-                        self.save(job)  # base_scraper skips it if apply_url is empty
+                        key = (job.company or "").strip().lower()
+                        if cap and key and saved_by_company[key] >= cap:
+                            log.info("[wwr] skipped (>{} from {}) — {}", cap, job.company, job.site_job_id)
+                        else:
+                            result = self.save(job)  # base_scraper skips it if apply_url is empty
+                            if key and result != "skipped":
+                                saved_by_company[key] += 1
                 await asyncio.sleep(random.uniform(0.4, 1.1))  # be polite
 
     #: WWR feature pages that live under /remote-jobs/ but aren't job postings.
