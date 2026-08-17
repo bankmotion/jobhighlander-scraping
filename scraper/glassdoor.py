@@ -480,7 +480,7 @@ class GlassdoorScraper(BaseScraper):
         jobs: list[ScrapedJob] = []
         skipped = 0
         for item in unique:
-            if len(jobs) >= settings.max_jobs:
+            if settings.max_jobs and len(jobs) >= settings.max_jobs:
                 break
             jid = item["jobId"]
             if jid in existing:

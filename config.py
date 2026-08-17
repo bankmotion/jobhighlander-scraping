@@ -53,8 +53,10 @@ class Settings(BaseSettings):
     # ── Indeed ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
     indeed_session_file: str = str(BASE_DIR / "sessions" / "indeed_session.json")
-    max_jobs: int = 25
-    indeed_max_pages: int = 10  # paginate the results (&start=N); stops early if exhausted or max_jobs hit
+    # Global scrape limits (apply to every scraper). Prefer bounding by recency:
+    max_jobs: int = 0  # 0 = no count cap (scrape all, bounded by max_age_days + pagination)
+    max_age_days: int = 7  # only keep jobs posted within N days (0 = no age limit)
+    indeed_max_pages: int = 10  # paginate the results (&start=N); stops early if exhausted / too old
     fetch_descriptions: bool = True
     capture_apply_url: bool = True
 

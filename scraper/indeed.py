@@ -292,9 +292,12 @@ class IndeedScraper(BaseScraper):
         skipped = 0
 
         # Walk the results pages (Indeed paginates via &start=N), stopping early
-        # once max_jobs is reached or a page yields no new postings.
+        # once max_jobs is reached, a page yields no new postings, or (for
+        # date-sorted results) we reach postings older than max_age_days.
+        date_sorted = "sort=date" in settings.indeed_search_url
+        stop = False
         for page_num in range(settings.indeed_max_pages):
-            if len(jobs) >= settings.max_jobs:
+            if stop or (settings.max_jobs and len(jobs) >= settings.max_jobs):
                 break
             ok = await self.browser.goto(self._page_url(settings.indeed_search_url, page_num))
             if not ok:
@@ -326,12 +329,17 @@ class IndeedScraper(BaseScraper):
                 break
 
             for item in new_cards:
-                if len(jobs) >= settings.max_jobs:
+                if settings.max_jobs and len(jobs) >= settings.max_jobs:
                     break
                 jk = item["jk"]
                 if jk in existing:
                     skipped += 1
                     continue
+                posted = compute_posted_at(item.get("posted"), item.get("pubDate"))
+                if date_sorted and self._too_old(posted):
+                    log.info("Reached postings older than {}d — stopping (date-sorted).", settings.max_age_days)
+                    stop = True
+                    break
                 description = item.get("snippet", "")
                 # location / remote / job_type / company come from the reliable
                 # listing mosaic; the detail page only adds description,
@@ -361,11 +369,14 @@ class IndeedScraper(BaseScraper):
                     remote=remote,
                     location=location,
                     salary=item.get("salary") or None,
-                    posted_at=compute_posted_at(item.get("posted"), item.get("pubDate")),
+                    posted_at=posted,
                     apply_url=apply_url,
                 )
                 self.save(job)  # persist this job immediately, one by one
                 jobs.append(job)
+
+            if stop:
+                break
 
         log.info("Indeed: {} new job(s) saved, {} already stored (skipped).", len(jobs), skipped)
         return jobs

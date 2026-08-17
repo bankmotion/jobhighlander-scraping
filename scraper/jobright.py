@@ -219,7 +219,7 @@ class JobRightScraper(BaseScraper):
         jobs: list[ScrapedJob] = []
         skipped = 0
         for item in items:
-            if len(jobs) >= settings.max_jobs:
+            if settings.max_jobs and len(jobs) >= settings.max_jobs:
                 break
             jr = (item or {}).get("jobResult") or {}
             jid = jr.get("jobId")
@@ -308,7 +308,9 @@ class JobRightScraper(BaseScraper):
                 if k.lower() not in ("host", "content-length", "connection", "accept-encoding", "content-type")
             }
             pos = len(collected)
-            while len(collected) < want:
+            # want <= 0 means "no count cap" — page until the feed is exhausted
+            # (bounded by a safety ceiling so a huge feed can't run away).
+            while (want <= 0 or len(collected) < want) and len(collected) < 500:
                 url = (
                     f"{settings.jobright_recommend_api}"
                     f"?refresh=false&sortCondition=0&position={pos}&count=20&syncRerank=false"

@@ -55,12 +55,17 @@ _EMPLOYMENT = {
 
 def _html_to_text(h: str) -> str:
     """Flatten the JSON-LD description HTML into readable plain text (matches how
-    the other scrapers store `description`)."""
+    the other scrapers store `description`). WWR entity-encodes the HTML
+    (`&lt;h4&gt;`), so unescape FIRST — otherwise stripping tags does nothing and
+    the later unescape re-creates them."""
+    h = _html.unescape(h)  # &lt;h4&gt; -> <h4>  (reveal the real tags first)
+    h = h.replace("\r\n", "\n").replace("\r", "\n")
     h = re.sub(r"(?i)<\s*(br|/p|/div|/h[1-6]|/tr)\s*/?>", "\n", h)
     h = re.sub(r"(?i)<\s*li[^>]*>", "\n• ", h)
     h = re.sub(r"<[^>]+>", "", h)
-    h = _html.unescape(h)
+    h = _html.unescape(h).replace("\xa0", " ")  # residual entities + nbsp -> space
     h = re.sub(r"[ \t]+\n", "\n", h)
+    h = re.sub(r"\n[ \t]+", "\n", h)
     h = re.sub(r"\n{3,}", "\n\n", h)
     return h.strip()
 
@@ -150,7 +155,8 @@ class WeWorkRemotelyScraper(BaseScraper):
         try:
             await self.scrape()
             log.info(
-                "[{}] done — inserted={inserted} updated={updated} unchanged={unchanged} skipped={skipped}",
+                "[{}] done — inserted={inserted} updated={updated} unchanged={unchanged} "
+                "skipped={skipped} too_old={too_old}",
                 self.site,
                 **self.counts,
             )
@@ -183,8 +189,8 @@ class WeWorkRemotelyScraper(BaseScraper):
                 log.error("[wwr] could not load listing {}", self.listing_url)
                 return
             slugs = self._listing_slugs(listing)
-            limit = settings.max_jobs
-            log.info("[wwr] {} jobs on listing; scraping up to {}", len(slugs), limit)
+            limit = settings.max_jobs or None  # None = no count cap
+            log.info("[wwr] {} jobs on listing; scraping up to {}", len(slugs), limit or "all")
 
             for slug in slugs[:limit]:
                 detail = await self._get(session, self.BASE + slug)

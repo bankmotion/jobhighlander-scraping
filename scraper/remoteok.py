@@ -72,7 +72,7 @@ class RemoteOkScraper(BaseScraper):
             "[remoteok] {} from API -> {} after {}d + role filter (cap {})",
             len(jobs), len(recent), settings.remoteok_max_age_days, settings.max_jobs,
         )
-        for jr in recent[: settings.max_jobs]:
+        for jr in recent[: settings.max_jobs or None]:
             job = self._to_job(jr)
             if not job:
                 continue

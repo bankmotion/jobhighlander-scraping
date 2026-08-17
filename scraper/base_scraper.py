@@ -6,9 +6,10 @@ New sites (the extra links you'll send later) subclass this and implement
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Optional
 
+from config import settings
 from logger import log
 from scraper.browser import StealthBrowser
 from scraper.db import JobRepository
@@ -48,7 +49,7 @@ class BaseScraper:
         self.browser = StealthBrowser(user_data_dir=self.user_data_dir, proxy_url=self.proxy_url)
         self.repo = JobRepository(table=self.table)
         #: Running write totals, updated by save() as each job is persisted.
-        self.counts = {"inserted": 0, "updated": 0, "unchanged": 0, "unknown": 0, "skipped": 0}
+        self.counts = {"inserted": 0, "updated": 0, "unchanged": 0, "unknown": 0, "skipped": 0, "too_old": 0}
 
     async def scrape(self) -> list[ScrapedJob]:
         """Scrape the site, calling `self.save(job)` for EACH job as it completes
@@ -67,6 +68,13 @@ class BaseScraper:
             self.counts["skipped"] += 1
             log.info("[{}] skipped (no apply url) — {} ({})", self.site, (job.title or "")[:50], job.site_job_id)
             return "skipped"
+        if self._too_old(job.posted_at):
+            self.counts["too_old"] += 1
+            log.info(
+                "[{}] skipped (posted {} — older than {}d) — {}",
+                self.site, job.posted_at, settings.max_age_days, (job.title or "")[:50],
+            )
+            return "too_old"
         result = self.repo.upsert_job(
             site=self.site,
             site_job_id=job.site_job_id,
@@ -86,13 +94,27 @@ class BaseScraper:
         log.info("[{}] saved {} ({}) — {}", self.site, result, job.site_job_id, (job.title or "")[:50])
         return result
 
+    @staticmethod
+    def _too_old(posted) -> bool:
+        """True if `posted` is older than settings.max_age_days (0 = no age limit).
+        Jobs with an unknown date are kept (not skipped)."""
+        if not settings.max_age_days or posted is None:
+            return False
+        if isinstance(posted, datetime):
+            posted = posted.date()
+        try:
+            return posted < (date.today() - timedelta(days=settings.max_age_days))
+        except TypeError:
+            return False
+
     async def run(self) -> None:
         try:
             await self.browser.start()
             self.repo.connect()
             await self.scrape()  # each job is saved inline as it's scraped
             log.info(
-                "[{}] done — inserted={inserted} updated={updated} unchanged={unchanged} skipped={skipped}",
+                "[{}] done — inserted={inserted} updated={updated} unchanged={unchanged} "
+                "skipped={skipped} too_old={too_old}",
                 self.site,
                 **self.counts,
             )
