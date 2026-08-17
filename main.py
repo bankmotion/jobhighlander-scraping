@@ -14,11 +14,12 @@ import asyncio
 import sys
 import traceback
 
-from config import settings
+from config import settings, sync_settings_from_db
 from logger import log
 from scraper.db import ScrapeRunRepo
 from scraper.glassdoor import GlassdoorScraper
 from scraper.indeed import IndeedScraper
+from scraper.himalayas import HimalayasScraper
 from scraper.jobright import JobRightScraper
 from scraper.remoteok import RemoteOkScraper
 from scraper.weworkremotely import WeWorkRemotelyScraper
@@ -29,6 +30,7 @@ SCRAPERS = {
     "jobright": JobRightScraper,
     "weworkremotely": WeWorkRemotelyScraper,
     "remoteok": RemoteOkScraper,
+    "himalayas": HimalayasScraper,
     # Add more sites here as their links arrive — each reuses the same core.
 }
 
@@ -41,6 +43,7 @@ def enabled_sites() -> list[str]:
         "jobright": settings.enable_jobright,
         "weworkremotely": settings.enable_weworkremotely,
         "remoteok": settings.enable_remoteok,
+        "himalayas": settings.enable_himalayas,
     }
     return [s for s in SCRAPERS if flags.get(s, True)]
 
@@ -84,6 +87,7 @@ async def run_site(site: str) -> bool:
 
 
 async def main() -> None:
+    sync_settings_from_db()  # apply super-admin DB overrides before anything else
     sites = resolve_sites(sys.argv[1:])
     if not sites:
         log.warning("No sites to scrape — all ENABLE_* flags are off.")

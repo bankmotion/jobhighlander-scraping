@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     enable_jobright: bool = True
     enable_weworkremotely: bool = False
     enable_remoteok: bool = False
+    enable_himalayas: bool = False
 
     # ── Indeed ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
@@ -87,6 +88,11 @@ class Settings(BaseSettings):
     remoteok_role_regex: str = r"engineer|developer|software|programmer|full.?stack|back.?end|front.?end|devops"
     remoteok_user_data_dir: str = str(BASE_DIR / "sessions" / "remoteok-chrome-profile")
 
+    # ── Himalayas (public JSON API; no login/browser; jobs_temp until promoted) ──
+    himalayas_api_url: str = "https://himalayas.app/jobs/api"
+    himalayas_country: str = "United States"  # matches the API's locationRestrictions
+    himalayas_role_regex: str = r"engineer|developer|software|programmer"
+
     # ── Scheduler (random gap between runs, hours) ──
     schedule_min_hours: float = 1.0
     schedule_max_hours: float = 3.0
@@ -95,3 +101,75 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# ── DB-managed settings (super-admins edit these via the scraper_settings table).
+# They override the .env/code defaults above; everything else (db_*, secrets)
+# stays .env-only. Add a key here to surface it in the admin UI. ──
+DB_MANAGED_KEYS: tuple = (
+    "max_jobs", "max_age_days", "proxy_url", "fetch_descriptions",
+    "enable_indeed", "indeed_search_url", "indeed_max_pages",
+    "enable_glassdoor", "glassdoor_search_url",
+    "enable_jobright", "jobright_recommend_url", "jobright_recommend_api",
+    "enable_weworkremotely", "weworkremotely_search_url", "weworkremotely_use_proxy",
+    "weworkremotely_max_per_company",
+    "enable_remoteok", "remoteok_api_url",
+    "enable_himalayas", "himalayas_api_url", "himalayas_country", "himalayas_role_regex",
+)
+
+
+def _fmt(val) -> str:
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    return "" if val is None else str(val)
+
+
+def _coerce(current, raw: str):
+    if isinstance(current, bool):
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(current, int):
+        try:
+            return int(str(raw).strip())
+        except (TypeError, ValueError):
+            return current
+    return raw
+
+
+def sync_settings_from_db() -> None:
+    """Seed missing DB-managed keys from the current settings, then override the
+    settings with the DB values (precedence: DB > .env > code default). Called at
+    scraper startup; silently no-ops if the DB/table isn't reachable."""
+    import pymysql
+
+    try:
+        conn = pymysql.connect(
+            host=settings.db_host, port=settings.db_port, user=settings.db_user,
+            password=settings.db_password, database=settings.db_name,
+            charset="utf8mb4", autocommit=True,
+        )
+    except Exception:
+        return
+    rows = []
+    try:
+        with conn.cursor() as cur:
+            for key in DB_MANAGED_KEYS:  # seed missing keys (never clobbers edits)
+                cur.execute(
+                    "INSERT IGNORE INTO scraper_settings (`key`, `value`, `updated_at`) "
+                    "VALUES (%s, %s, UTC_TIMESTAMP(3))",
+                    (key, _fmt(getattr(settings, key, None))),
+                )
+            cur.execute("SELECT `key`, `value` FROM scraper_settings")
+            rows = cur.fetchall()
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    for key, raw in rows:
+        if key in DB_MANAGED_KEYS and hasattr(settings, key):
+            try:
+                setattr(settings, key, _coerce(getattr(settings, key), raw))
+            except Exception:
+                pass
