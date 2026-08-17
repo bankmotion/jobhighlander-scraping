@@ -1,13 +1,21 @@
 """Himalayas scraper — public JSON API, no login/browser.
 
-`himalayas.app/jobs/api` is a public, paginated (offset, 20/page), newest-first
-JSON feed — clean structured data, curl_cffi gets 200. We page until we reach
-jobs older than max_age_days, filtering to a country (locationRestrictions) and
-a role regex.
+`himalayas.app/jobs/api` is a public, paginated, newest-first JSON feed — clean
+structured data, curl_cffi gets 200. We page until we reach jobs older than
+max_age_days, filtering to a country (locationRestrictions) and a role regex.
+`limit` is capped server-side at 20, so asking for more silently returns 20 (and
+stepping `offset` by more than 20 would skip listings).
 
-The apply link points to the Himalayas job PAGE (its pages are Cloudflare-walled,
-so the real employer URL isn't reachable from this datacenter — same as
-RemoteOK); that page is a working, login-free apply destination.
+The apply link points to the Himalayas job PAGE, not the employer's own form,
+because Himalayas doesn't publish the employer URL anywhere we can reach:
+  • the API/RSS never carry it (no job description contains an external link);
+  • the job page is Cloudflare-challenged (403 to plain HTTP — tools/
+    resolve_himalayas_apply.py drives a real browser through it); and
+  • even past Cloudflare, "Apply now" is `/signup/talent?...` and the page's
+    JSON-LD says `"directApply": false` — it's login-gated.
+The Himalayas job page is still a working apply destination; the visitor signs up
+there. Run tools/resolve_himalayas_apply.py with a signed-in profile to upgrade
+rows to real employer URLs.
 """
 from __future__ import annotations
 

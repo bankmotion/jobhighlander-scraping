@@ -8,10 +8,16 @@ with a persistent profile):
   3. `launch_persistent_context(user_data_dir=...)` — the "perfect browser":
      one durable Chrome profile whose cookies + fingerprint persist across runs,
      so we present as a returning human rather than a clean-room bot.
-  4. Cloudflare Turnstile handling copied from the reference project: detect the
-     interstitial by page title, then geometrically click the checkbox inside
-     the challenges.cloudflare.com iframe.
+  4. Cloudflare Turnstile handling: detect the interstitial (iframe presence,
+     page title, or body text), bring the window to the FOREGROUND — Turnstile
+     ignores clicks while the window is unfocused — and geometrically click the
+     checkbox inside the challenges.cloudflare.com iframe. See
+     `clear_challenge()`, which tools/ shares.
   5. Human-shaped pacing on every navigation (see `human.py`).
+
+Headful only: per patchright's maintainers, headless Chrome is always detectable
+without a patched Chromium, so `HEADLESS=true` will not pass an interactive
+Cloudflare challenge.
 """
 from __future__ import annotations
 
@@ -46,6 +52,155 @@ _CHALLENGE_TEXT_HINTS = (
     "needs to review the security of your connection",
     "ray id",
 )
+
+#: X-offsets (CSS px, from the widget's left edge) of the Turnstile checkbox,
+#: tried in order across successive clicks. Measured on the live 300x65 "normal"
+#: widget: the box spans roughly x+8 … x+28, so its centre is ~x+18. The old
+#: `width / 9` (≈33px on a 300px widget) landed just PAST the checkbox's right
+#: edge and silently did nothing.
+_TURNSTILE_CLICK_DX = (18, 24, 12)
+
+
+# ── Cloudflare / checkpoint handling (page-scoped so standalone tools in
+#    tools/ can share the exact same logic instead of re-implementing it) ──────
+async def turnstile_bbox(page) -> Optional[dict]:
+    """Bounding box of the VISIBLE challenges.cloudflare.com Turnstile widget.
+
+    A full-page interstitial often has more than one challenges.cloudflare.com
+    iframe — a hidden/tiny management iframe plus the visible checkbox widget.
+    Returning the first one could yield the 0-size hidden iframe, so the
+    geometric click lands on empty space. Pick the largest visibly-sized one."""
+    best = None
+    try:
+        for frame in page.frames:
+            if not frame.url.startswith("https://challenges.cloudflare.com"):
+                continue
+            try:
+                bbox = await (await frame.frame_element()).bounding_box()
+            except Exception:
+                continue
+            # Skip hidden/management iframes; keep only widget-sized ones.
+            if not bbox or bbox["width"] < 50 or bbox["height"] < 20:
+                continue
+            if best is None or bbox["width"] * bbox["height"] > best["width"] * best["height"]:
+                best = bbox
+    except Exception:
+        pass
+    return best
+
+
+async def is_challenged(page) -> tuple[bool, str, Optional[dict]]:
+    """Return (challenged?, title, turnstile_bbox). A page is challenged if a
+    challenges.cloudflare.com iframe is present, OR the title/body text match
+    known interstitial phrases (covers Indeed's own-branded challenge page)."""
+    try:
+        title = (await page.title()) or ""
+    except Exception:
+        title = ""
+    bbox = await turnstile_bbox(page)
+    if bbox is not None:
+        return True, title, bbox
+    if any(h in title.lower() for h in _CHECKPOINT_TITLE_HINTS):
+        return True, title, None
+    try:
+        body = ((await page.inner_text("body")) or "")[:4000].lower()
+        if any(h in body for h in _CHALLENGE_TEXT_HINTS):
+            return True, title, None
+    except Exception:
+        pass
+    return False, title, None
+
+
+async def clear_challenge(
+    page,
+    max_wait_s: int = 120,
+    grace_s: int = 8,
+    max_clicks: int = 3,
+    click_gap_s: int = 12,
+    click: bool = True,
+) -> bool:
+    """Wait out / click through a bot-checkpoint interstitial.
+
+    Some checkpoints auto-clear if you simply wait (hence the grace period before
+    touching anything). An *interactive* Turnstile ("Verify you are human" with a
+    checkbox) never auto-clears — it has to be clicked. Two things make that click
+    actually register, and both used to be missing here:
+
+      1. THE WINDOW MUST BE FOCUSED. Turnstile ignores pointer input while
+         `document.hasFocus()` is false, which is the normal state for a browser
+         driven from a terminal — the click was dispatched, the checkbox stayed
+         empty, and the challenge sat there until the timeout. `bring_to_front()`
+         fixes it.
+      2. THE CLICK MUST LAND ON THE CHECKBOX (see `_TURNSTILE_CLICK_DX`).
+
+    We click at most `max_clicks` times, spaced `click_gap_s` apart, walking
+    through the candidate offsets (rapid re-clicking loops forever on sticky
+    challenges, common on datacenter/server IPs).
+
+    NOTE: we deliberately do NOT click via `frame_locator(...).locator(...)` into
+    the Cloudflare iframe. Locator clicks execute from patchright's utility
+    context, which Turnstile has been known to flag as a context leak and then
+    freeze its own event listeners — after which even a real human click fails.
+    A plain trusted mouse event at the right coordinates has none of that risk.
+    """
+    elapsed = 0
+    clicks = 0
+    last_click = -10_000
+    title = ""
+    while elapsed < max_wait_s:
+        challenged, title, bbox = await is_challenged(page)
+        if not challenged:
+            if elapsed:
+                log.info("Checkpoint cleared after ~{}s (title={!r})", elapsed, title)
+            return True
+
+        if (
+            bbox
+            and click
+            and elapsed >= grace_s
+            and clicks < max_clicks
+            and elapsed - last_click >= click_gap_s
+        ):
+            dx = _TURNSTILE_CLICK_DX[min(clicks, len(_TURNSTILE_CLICK_DX) - 1)]
+            cx = bbox["x"] + dx
+            cy = bbox["y"] + bbox["height"] / 2
+            try:
+                # Focus first — without this the click is silently ignored.
+                await page.bring_to_front()
+                await asyncio.sleep(0.5)
+                focused = await page.evaluate("() => document.hasFocus()")
+                # Approach the checkbox like a human, then press/release with a
+                # human-length dwell rather than an instantaneous click.
+                await page.mouse.move(cx - 140, cy - 90, steps=12)
+                await asyncio.sleep(0.3)
+                await page.mouse.move(cx - 40, cy - 20, steps=10)
+                await asyncio.sleep(0.25)
+                await page.mouse.move(cx, cy, steps=10)
+                await asyncio.sleep(0.5)
+                await page.mouse.down()
+                await asyncio.sleep(0.09)
+                await page.mouse.up()
+                clicks += 1
+                last_click = elapsed
+                log.info(
+                    "Clicked Turnstile ({}/{}) at ~{}s — widget {}x{}, click=({:.0f},{:.0f}) "
+                    "dx=+{}, hasFocus={}",
+                    clicks, max_clicks, elapsed,
+                    round(bbox["width"]), round(bbox["height"]), cx, cy, dx, focused,
+                )
+                if not focused:
+                    log.warning(
+                        "Window is NOT focused — Turnstile ignores clicks in that state. "
+                        "Keep the Chrome window visible/foreground (headless can't pass this)."
+                    )
+            except Exception as exc:
+                log.warning("Turnstile click failed: {}", exc)
+
+        await asyncio.sleep(2)
+        elapsed += 2
+
+    log.warning("Checkpoint NOT cleared after {}s; last title={!r}", max_wait_s, title)
+    return False
 
 
 class StealthBrowser:
@@ -94,19 +249,27 @@ class StealthBrowser:
             "user_data_dir": str(self.user_data_dir),
             "channel": "chrome",
             "headless": self.headless,
-            "args": [
-                "--disable-blink-features=AutomationControlled",
-                "--start-maximized",
-                # QUIC (UDP) can't traverse an HTTP proxy; Chrome prefers it for
-                # Google domains and stalls at about:blank. Force TCP.
-                "--disable-quic",
-                "--no-first-run",
-                "--no-default-browser-check",
-            ],
+            # Keep this list as SHORT as possible: patchright's own default args
+            # are tuned for stealth, and every extra flag is one more thing to
+            # fingerprint. It ALREADY passes
+            # `--disable-blink-features=AutomationControlled`, `--no-first-run`
+            # and `--no-default-browser-check`, so don't repeat those — a
+            # maximized real window is the only thing we still want.
+            "args": ["--start-maximized"]
+            # QUIC (UDP) can't traverse an HTTP proxy; Chrome prefers it for
+            # Google domains and stalls at about:blank. Force TCP — but only
+            # when we're actually proxied.
+            + (["--disable-quic"] if self.proxy_url else []),
             # Use the real window size (no synthetic viewport) — fewer fingerprint
             # inconsistencies for Cloudflare to catch.
             "no_viewport": True,
             "locale": "en-US",
+            # Playwright defaults this to False, which silently appends
+            # `--no-sandbox` — a flag real Chrome never runs with (it also raises
+            # Chrome's yellow "unsupported command-line flag" infobar) and one
+            # patchright's maintainers call potentially detectable. Keep the
+            # sandbox ON so our command line looks like a normal browser's.
+            "chromium_sandbox": True,
         }
         if settings.timezone:
             launch_kwargs["timezone_id"] = settings.timezone
@@ -152,111 +315,23 @@ class StealthBrowser:
             self._local_proxy = None
 
     # ── Cloudflare / checkpoint handling ────────────────────────────────────
-    async def _cloudflare_bbox(self):
-        """Bounding box of the VISIBLE challenges.cloudflare.com Turnstile widget.
-
-        A full-page interstitial often has more than one challenges.cloudflare.com
-        iframe — a hidden/tiny management iframe plus the visible checkbox widget.
-        Returning the first one (as we used to) could yield the 0-size hidden
-        iframe, so the geometric click lands on empty space. Pick the largest
-        visibly-sized iframe instead."""
-        best = None
-        try:
-            for frame in self.page.frames:
-                if not frame.url.startswith("https://challenges.cloudflare.com"):
-                    continue
-                try:
-                    fe = await frame.frame_element()
-                    bbox = await fe.bounding_box()
-                except Exception:
-                    continue
-                # Skip hidden/management iframes; keep only widget-sized ones.
-                if not bbox or bbox["width"] < 50 or bbox["height"] < 20:
-                    continue
-                if best is None or bbox["width"] * bbox["height"] > best["width"] * best["height"]:
-                    best = bbox
-        except Exception:
-            pass
-        return best
-
-    async def _is_challenged(self) -> tuple[bool, str, Optional[dict]]:
-        """Return (challenged?, title, turnstile_bbox). A page is challenged if a
-        challenges.cloudflare.com iframe is present, OR the title/body text match
-        known interstitial phrases (covers Indeed's own-branded challenge page)."""
-        try:
-            title = (await self.page.title()) or ""
-        except Exception:
-            title = ""
-        bbox = await self._cloudflare_bbox()
-        if bbox is not None:
-            return True, title, bbox
-        if any(h in title.lower() for h in _CHECKPOINT_TITLE_HINTS):
-            return True, title, None
-        try:
-            body = ((await self.page.inner_text("body")) or "")[:4000].lower()
-            if any(h in body for h in _CHALLENGE_TEXT_HINTS):
-                return True, title, None
-        except Exception:
-            pass
-        return False, title, None
-
     async def clear_checkpoint(
         self,
         max_wait_s: int = 120,
         grace_s: int = 8,
-        max_clicks: int = 2,
+        max_clicks: int = 3,
         click_gap_s: int = 12,
     ) -> bool:
-        """Wait out / click through a bot-checkpoint interstitial.
-
-        Some checkpoints auto-clear if you simply wait (hence the grace period
-        before touching anything). If a Cloudflare Turnstile is present, click
-        its checkbox at (x + width/9, y + height/2) of the iframe — at most
-        `max_clicks` times, spaced `click_gap_s` apart (rapid re-clicking loops
-        forever on sticky challenges, common on datacenter/server IPs).
-        """
-        elapsed = 0
-        clicks = 0
-        last_click = -10_000
-        title = ""
-        while elapsed < max_wait_s:
-            challenged, title, bbox = await self._is_challenged()
-            if not challenged:
-                if elapsed:
-                    log.info("Checkpoint cleared after ~{}s (title={!r})", elapsed, title)
-                return True
-
-            if (
-                bbox
-                and settings.click_turnstile
-                and elapsed >= grace_s
-                and clicks < max_clicks
-                and elapsed - last_click >= click_gap_s
-            ):
-                try:
-                    # Approach the checkbox like a human before clicking. The
-                    # Turnstile checkbox sits ~30px from the widget's left edge,
-                    # vertically centered (≈ width/9 for the ~300px widget).
-                    cx = bbox["x"] + bbox["width"] / 9
-                    cy = bbox["y"] + bbox["height"] / 2
-                    await self.page.mouse.move(cx, cy, steps=15)
-                    await asyncio.sleep(0.4)
-                    await self.page.mouse.click(cx, cy)
-                    clicks += 1
-                    last_click = elapsed
-                    log.info(
-                        "Clicked Turnstile ({}/{}) at ~{}s — widget {}x{}, click=({:.0f},{:.0f})",
-                        clicks, max_clicks, elapsed,
-                        round(bbox["width"]), round(bbox["height"]), cx, cy,
-                    )
-                except Exception as exc:
-                    log.warning("Turnstile click failed: {}", exc)
-
-            await asyncio.sleep(2)
-            elapsed += 2
-
-        log.warning("Checkpoint NOT cleared after {}s; last title={!r}", max_wait_s, title)
-        return False
+        """Wait out / click through a bot-checkpoint interstitial (see
+        `clear_challenge`, which standalone tools share)."""
+        return await clear_challenge(
+            self.page,
+            max_wait_s=max_wait_s,
+            grace_s=grace_s,
+            max_clicks=max_clicks,
+            click_gap_s=click_gap_s,
+            click=settings.click_turnstile,
+        )
 
     # ── navigation ──────────────────────────────────────────────────────────
     async def goto(self, url: str, wait_until: str = "domcontentloaded") -> bool:

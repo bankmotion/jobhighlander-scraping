@@ -1,15 +1,24 @@
 """Resolve real employer apply URLs for Himalayas jobs, and write them back.
 
-Himalayas stores `apply_url` = the Himalayas job page, because the real employer
-"Apply" link only lives ON that page — which is behind a Cloudflare managed
-challenge that this datacenter server can't clear. Run THIS script from a machine
-whose IP clears the challenge (a trusted residential IP auto-clears it; or point
-Chrome at a CF-solving proxy via --proxy). It opens each job page, extracts the
-real apply URL, and updates the row.
+Himalayas stores `apply_url` = the Himalayas job page. Two separate walls stand
+between us and the employer's own apply URL, and it's worth keeping them apart:
 
-It pays the Cloudflare cost ONCE: the first page solve leaves a cf_clearance
-cookie in the persistent profile, and every later job page in the same run reuses
-it (no re-challenge).
+  1. CLOUDFLARE, on every job page (`cf-mitigated: challenge`, so plain HTTP gets
+     403 and only a real browser can get through). This one is SOLVED — see the
+     Cloudflare notes below.
+  2. A LOGIN WALL behind it. Even on a fully rendered job page, an anonymous
+     visitor never sees the employer link: every "Apply now" button points at
+     `/signup/talent?redirect=...&showModal=true`, and the page's own JSON-LD
+     declares `"directApply": false`. No amount of CF-clearing reveals it —
+     resolving these needs a SIGNED-IN Himalayas session in --profile.
+
+So on a logged-out run expect "LOGIN-GATED" for most jobs. That is not a failure
+of this script, and the stored Himalayas job page remains a working apply
+destination (the visitor just signs up on Himalayas to continue).
+
+The Cloudflare cost is usually paid ONCE per run: the first solve leaves a
+cf_clearance cookie in the persistent profile, and later job pages in the same
+session normally sail through un-challenged.
 
 Two connectivity modes — because the MariaDB lives on the server:
   • DB mode (default): read himalayas rows straight from the DB, update in place.
@@ -24,21 +33,38 @@ Two connectivity modes — because the MariaDB lives on the server:
         # back on the server:
         python tools/resolve_himalayas_apply.py --import-file resolved.json
 
-Common flags: --limit N, --dry-run, --headless, --proxy URL, --profile DIR.
+CLOUDFLARE — what actually works (measured, not guessed):
+  • Run HEADED and keep the window in the FOREGROUND. Turnstile ignores clicks
+    while `document.hasFocus()` is false, so an unfocused/headless window sits on
+    the checkbox until it times out. `clear_challenge()` calls bring_to_front().
+  • `--real-chrome` attaches to a Chrome we start ourselves, so the browser
+    carries no automation launch flags at all and its profile ages like a human's:
+        python tools/resolve_himalayas_apply.py --real-chrome --manual --limit 20
+  • `--manual` lets you click the checkbox yourself when automation can't; the run
+    then continues on its own.
+  • Failed challenges compound — each one makes Cloudflare stricter with your IP,
+    so the run aborts after --max-cf-failures (3) instead of digging the hole
+    deeper. If you get blocked, wait ~30 min or switch IP/--proxy.
+
+Common flags: --limit N, --dry-run, --proxy URL, --profile DIR, --real-chrome,
+--manual [SECONDS], --keep-open, --max-cf-failures N.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+import random
 import re
 import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-_HINTS = ("just a moment", "attention required", "checking your browser",
-          "verifying you are human", "security checkpoint")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# The one shared, fixed Cloudflare routine (focus + correct checkbox offset).
+from scraper.browser import clear_challenge, is_challenged  # noqa: E402
 
 # Hosts that appear on a job page but are never the employer apply link.
 _JUNK_HOST_RE = re.compile(
@@ -96,45 +122,6 @@ def write_updates(rows: list[dict]) -> int:
     return n
 
 
-# ── Cloudflare clear (patient: grace, single click, title detection) ─────────
-async def _cf_bbox(page):
-    try:
-        for frame in page.frames:
-            if not frame.url.startswith("https://challenges.cloudflare.com"):
-                continue
-            try:
-                b = await (await frame.frame_element()).bounding_box()
-                if b:
-                    return b
-            except Exception:
-                continue
-    except Exception:
-        pass
-    return None
-
-
-async def clear_cf(page, max_wait_s=100, grace_s=20, max_clicks=1, click_gap_s=15) -> bool:
-    elapsed, clicks, last = 0, 0, -10_000
-    while elapsed < max_wait_s:
-        try:
-            title = (await page.title()) or ""
-        except Exception:
-            title = ""
-        if not any(h in title.lower() for h in _HINTS):
-            return True
-        box = await _cf_bbox(page)
-        if box and elapsed >= grace_s and clicks < max_clicks and elapsed - last >= click_gap_s:
-            try:
-                await page.mouse.click(box["x"] + box["width"] / 9, box["y"] + box["height"] / 2)
-                clicks += 1
-                last = elapsed
-            except Exception:
-                pass
-        await asyncio.sleep(2)
-        elapsed += 2
-    return False
-
-
 # ── apply-URL extraction ─────────────────────────────────────────────────────
 async def _external_from_next_data(page) -> str | None:
     try:
@@ -183,6 +170,23 @@ async def _click_capture(page, ctx, handle) -> str | None:
     return None
 
 
+async def _is_login_gated(page) -> bool:
+    """True if the page's own Apply control just points at Himalayas' signup.
+
+    Himalayas does not expose the employer link to anonymous visitors: every
+    "Apply now" button is `/signup/talent?redirect=...&showModal=true`, and the
+    JSON-LD advertises `"directApply": false`. Worth reporting distinctly —
+    it is a LOGIN wall, not a Cloudflare failure, and no amount of
+    CF-clearing will reveal the URL."""
+    try:
+        hrefs = await page.eval_on_selector_all(
+            "a", "els => els.filter(e => /\\bapply\\b/i.test(e.textContent || ''))"
+                 "        .map(e => e.getAttribute('href') || '')")
+    except Exception:
+        return False
+    return bool(hrefs) and all(re.search(r"/(signup|login|signin)\b", h) for h in hrefs)
+
+
 async def extract_apply(page, ctx) -> str | None:
     # 1) an "Apply"-labelled anchor pointing straight off-site
     anchors = await page.eval_on_selector_all(
@@ -209,21 +213,141 @@ async def extract_apply(page, ctx) -> str | None:
             # a click may have navigated the page; get it back for the next try
             try:
                 await page.go_back(wait_until="domcontentloaded", timeout=15000)
-                await clear_cf(page, max_wait_s=40)
+                await clear_challenge(page, max_wait_s=60)
             except Exception:
                 pass
     return None
+
+
+async def _dump(page, job_id) -> None:
+    """Save the page we couldn't extract from, so a miss is debuggable."""
+    try:
+        out = Path("sessions") / f"himalayas-unresolved-{job_id}.html"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(await page.content(), encoding="utf-8")
+        print(f"      (saved page -> {out})")
+    except Exception:
+        pass
+
+
+async def _settle(page, tries: int = 6) -> None:
+    """Wait for the REAL job page to render.
+
+    Can't just wait for an <h1>: Cloudflare's own interstitial has one too
+    ("himalayas.app"), so the old check returned instantly while still on the
+    challenge. Wait for an <h1> that isn't the challenge's."""
+    for _ in range(tries):
+        await asyncio.sleep(1.5)
+        try:
+            texts = await page.eval_on_selector_all(
+                "h1", "els => els.map(e => (e.textContent || '').trim())")
+        except Exception:
+            continue
+        if any(t and t.lower() not in ("himalayas.app", "himalayas") for t in texts):
+            return
+
+
+# ── "real Chrome" mode: launch Chrome ourselves, then attach over CDP ────────
+# Nothing about this browser is Playwright-launched, so it carries none of the
+# automation launch flags (no --enable-automation, no --no-sandbox, not even
+# patchright's --disable-blink-features=AutomationControlled banner). It is the
+# same Chrome you use by hand, and its profile ages normally across runs, which
+# is exactly what Cloudflare's reputation signals reward.
+_CHROME_PATHS = (
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    "/usr/bin/google-chrome",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+)
+
+
+def _chrome_exe() -> str:
+    import os
+    if os.environ.get("CHROME_PATH"):
+        return os.environ["CHROME_PATH"]
+    for p in _CHROME_PATHS:
+        if Path(p).exists():
+            return p
+    raise SystemExit("Chrome not found — set CHROME_PATH=<path to chrome.exe>")
+
+
+def _launch_real_chrome(args) -> tuple:
+    """Start real Chrome with a debugging port; return (process, cdp_endpoint)."""
+    import subprocess
+    import urllib.request
+
+    profile = str(Path(args.chrome_profile).resolve())
+    Path(profile).mkdir(parents=True, exist_ok=True)
+    cmd = [
+        _chrome_exe(),
+        f"--remote-debugging-port={args.cdp_port}",
+        f"--user-data-dir={profile}",
+        "--start-maximized",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    if args.proxy:
+        u = urlparse(args.proxy)
+        cmd.append(f"--proxy-server={u.scheme}://{u.hostname}:{u.port}")
+    print(f"launching real Chrome (profile={profile})")
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    endpoint = f"http://127.0.0.1:{args.cdp_port}"
+    for _ in range(60):  # wait for the debugging endpoint to answer
+        try:
+            with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1) as r:
+                ver = json.loads(r.read().decode())
+            print("attached to:", ver.get("Browser"))
+            return proc, endpoint
+        except Exception:
+            time.sleep(0.5)
+    proc.terminate()
+    raise SystemExit(
+        f"Chrome did not open a debugging port on {args.cdp_port}.\n"
+        "If Chrome was ALREADY running with this profile it ignores the flag — "
+        "close every Chrome window for that profile first (or use a different "
+        "--chrome-profile / --cdp-port)."
+    )
+
+
+async def _wait_manual(page, seconds: int) -> bool:
+    """Let a HUMAN solve the challenge in the open window. Never uses input() —
+    that blocks the asyncio loop and wedges patchright's driver."""
+    print(f"\n  >>> Solve the Cloudflare checkbox in the Chrome window "
+          f"(waiting up to {seconds}s) <<<", flush=True)
+    for _ in range(seconds // 2):
+        await asyncio.sleep(2)
+        challenged, _, _ = await is_challenged(page)
+        if not challenged:
+            print("  thanks — challenge cleared, continuing automatically", flush=True)
+            return True
+    return False
 
 
 # ── run ──────────────────────────────────────────────────────────────────────
 async def resolve_all(jobs: list[dict], args) -> list[dict]:
     from patchright.async_api import async_playwright
 
+    if args.headless:
+        print("WARNING: headless Chrome cannot pass an interactive Cloudflare "
+              "challenge (and Turnstile ignores clicks when the window isn't "
+              "focused). Run headed, and leave the window in the foreground.")
+
+    # Minimal launch args on purpose — patchright's own defaults are the stealth
+    # config, and extra flags (notably re-adding
+    # --disable-blink-features=AutomationControlled, which patchright already
+    # sets) only add fingerprint surface.
     launch = dict(
         user_data_dir=args.profile, channel="chrome", headless=args.headless,
         no_viewport=True, locale="en-US",
-        args=["--disable-blink-features=AutomationControlled", "--start-maximized",
-              "--disable-quic", "--no-first-run", "--no-default-browser-check"],
+        # Playwright defaults chromium_sandbox to False, which appends
+        # `--no-sandbox` (Chrome then shows its yellow "unsupported
+        # command-line flag" infobar, and the flag itself is a bot signal).
+        chromium_sandbox=True,
+        # patchright already passes --no-first-run / --no-default-browser-check /
+        # --disable-blink-features=AutomationControlled; don't duplicate them.
+        # (Chrome's yellow "unsupported command-line flag" infobar about that last
+        # one is cosmetic — it's patchright's own stealth flag, leave it alone.)
+        args=["--start-maximized"],
     )
     if args.proxy:
         u = urlparse(args.proxy)
@@ -234,9 +358,20 @@ async def resolve_all(jobs: list[dict], args) -> list[dict]:
             launch["proxy"]["password"] = u.password
 
     resolved: list[dict] = []
+    cf_fails = 0
+    gated = 0
+    proc = None
     pw = await async_playwright().start()
-    ctx = await pw.chromium.launch_persistent_context(**launch)
-    page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+    if args.real_chrome or args.cdp:
+        endpoint = args.cdp
+        if not endpoint:
+            proc, endpoint = _launch_real_chrome(args)
+        browser = await pw.chromium.connect_over_cdp(endpoint)
+        ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+    else:
+        ctx = await pw.chromium.launch_persistent_context(**launch)
+        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
     page.set_default_timeout(60000)
     try:
         for i, job in enumerate(jobs, 1):
@@ -244,30 +379,67 @@ async def resolve_all(jobs: list[dict], args) -> list[dict]:
             t0 = time.monotonic()
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                cleared = await clear_cf(page, max_wait_s=args.cf_wait)
+                cleared = await clear_challenge(page, max_wait_s=args.cf_wait)
+                if not cleared and args.manual:
+                    cleared = await _wait_manual(page, args.manual)
                 if not cleared:
+                    cf_fails += 1
                     print(f"[{i}/{len(jobs)}] id={job['id']} CF NOT cleared — skipping")
-                    continue
-                # let the real content settle
-                for _ in range(4):
-                    await asyncio.sleep(2)
-                    if await page.eval_on_selector_all("h1", "e=>e.length"):
+                    # Every failed challenge makes Cloudflare stricter with this
+                    # IP, so grinding on turns a soft block into a hard one. Stop
+                    # and let the reputation decay instead.
+                    if cf_fails >= args.max_cf_failures:
+                        print(f"\nAborting: {cf_fails} Cloudflare failures in a row.\n"
+                              "  Each failure hardens the block for this IP, so retrying now\n"
+                              "  makes it worse. In rough order of effectiveness:\n"
+                              "   • --real-chrome   attach to a genuine Chrome instead of a\n"
+                              "                     Playwright-launched one (no automation flags)\n"
+                              "   • --manual 120    solve the checkbox yourself when we can't\n"
+                              "   • wait ~30 min and re-run (CF reputation decays), or\n"
+                              "   • run from a residential IP / --proxy")
                         break
+                    continue
+                cf_fails = 0
+                await _settle(page)
                 apply_url = await extract_apply(page, ctx)
                 took = round(time.monotonic() - t0, 1)
                 if apply_url:
                     resolved.append({"id": job["id"], "apply_url": apply_url})
                     print(f"[{i}/{len(jobs)}] id={job['id']} OK ({took}s) -> {apply_url[:70]}")
+                elif await _is_login_gated(page):
+                    gated += 1
+                    print(f"[{i}/{len(jobs)}] id={job['id']} LOGIN-GATED ({took}s) — "
+                          "Himalayas hides the employer link behind /signup")
                 else:
                     print(f"[{i}/{len(jobs)}] id={job['id']} no external apply URL found ({took}s)")
+                    await _dump(page, job["id"])
             except Exception as e:
                 print(f"[{i}/{len(jobs)}] id={job['id']} error: {str(e)[:80]}")
+            if i < len(jobs):  # don't machine-gun the next page
+                await asyncio.sleep(random.uniform(2.0, 5.0))
     finally:
-        for closer in (ctx.close, pw.stop):
+        if proc is not None and not args.keep_open:
+            # Only ever kill a Chrome WE launched.
             try:
-                await closer()
+                proc.terminate()
             except Exception:
                 pass
+        elif not (args.real_chrome or args.cdp):
+            try:
+                await ctx.close()
+            except Exception:
+                pass
+        try:
+            await pw.stop()
+        except Exception:
+            pass
+    if gated:
+        print(f"\n{gated} job page(s) were LOGIN-GATED. Cloudflare was cleared fine — "
+              "Himalayas simply\nnever shows the employer URL to a logged-out visitor "
+              '("Apply now" -> /signup/talent,\nand its JSON-LD says "directApply": false). '
+              "Resolving those needs a signed-in\nHimalayas session in the same profile; "
+              "otherwise the Himalayas job page stays the\napply destination (it works — "
+              "the visitor just signs up there).")
     return resolved
 
 
@@ -280,6 +452,24 @@ def main():
     ap.add_argument("--profile", default="sessions/himalayas-resolve-profile",
                     help="persistent Chrome profile dir (keeps the cf_clearance cookie)")
     ap.add_argument("--cf-wait", type=int, default=100, help="max seconds to wait for CF per page")
+    ap.add_argument("--max-cf-failures", type=int, default=3,
+                    help="give up after N Cloudflare failures in a row (default 3)")
+    # ── real-Chrome mode ──
+    ap.add_argument("--real-chrome", action="store_true",
+                    help="launch a GENUINE Chrome (no Playwright automation flags) and "
+                         "attach over CDP — the best odds against Cloudflare")
+    ap.add_argument("--cdp", help="attach to an ALREADY-running Chrome, e.g. http://127.0.0.1:9222 "
+                                  "(start it yourself with --remote-debugging-port=9222)")
+    ap.add_argument("--chrome-profile", default="sessions/himalayas-chrome",
+                    help="profile dir for --real-chrome. Point it at your own Chrome profile "
+                         "to inherit its history/cookies — Chrome must be fully CLOSED first")
+    ap.add_argument("--cdp-port", type=int, default=9222, help="debugging port for --real-chrome")
+    ap.add_argument("--keep-open", action="store_true",
+                    help="leave the --real-chrome window running afterwards, so the next run "
+                         "reuses the already-cleared session")
+    ap.add_argument("--manual", type=int, nargs="?", const=120, default=0, metavar="SECONDS",
+                    help="if we can't clear Cloudflare, pause and let YOU click the checkbox "
+                         "in the open window (default 120s)")
     ap.add_argument("--from-file", help="resolve URLs from this JSON [{id,url}] instead of the DB")
     ap.add_argument("--to-file", help="write resolved [{id,apply_url}] here instead of the DB")
     ap.add_argument("--export", help="DB -> write pending [{id,url}] to this file, then exit")
