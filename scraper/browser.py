@@ -133,20 +133,22 @@ class StealthBrowser:
         )
 
     async def close(self) -> None:
-        for closer in (
-            getattr(self.context, "close", None),
-            getattr(self._pw, "stop", None),
-        ):
-            if closer:
-                try:
-                    await closer()
-                except Exception:
-                    pass
-        if self._local_proxy:
+        # Each teardown step is time-boxed: on Windows the Proactor loop can
+        # otherwise block forever closing sockets whose peer already reset
+        # (WinError 10054), which would stall a multi-site run / the scheduler
+        # after one scraper instead of moving on to the next.
+        async def _safe(make, timeout: float = 15.0) -> None:
+            if not make:
+                return
             try:
-                await self._local_proxy.stop()
+                await asyncio.wait_for(make(), timeout=timeout)
             except Exception:
                 pass
+
+        await _safe(getattr(self.context, "close", None))
+        await _safe(getattr(self._pw, "stop", None))
+        if self._local_proxy:
+            await _safe(self._local_proxy.stop)
             self._local_proxy = None
 
     # ── Cloudflare / checkpoint handling ────────────────────────────────────

@@ -122,6 +122,9 @@ class LocalRoutingProxy:
         self.host = host
         self.port: Optional[int] = None
         self._server: Optional[asyncio.AbstractServer] = None
+        # Live connection-handler tasks, so stop() can cancel any that are
+        # blocked on a half-open upstream read instead of hanging wait_closed().
+        self._conns: set[asyncio.Task] = set()
 
     def _is_direct(self, host: str) -> bool:
         h = (host or "").lower()
@@ -136,13 +139,22 @@ class LocalRoutingProxy:
     async def stop(self) -> None:
         if self._server:
             self._server.close()
+            # Cancel in-flight tunnels first — a copy loop parked on a half-open
+            # upstream read would otherwise keep wait_closed() (and the whole
+            # run) hanging on Windows.
+            for t in list(self._conns):
+                t.cancel()
+            self._conns.clear()
             try:
-                await self._server.wait_closed()
+                await asyncio.wait_for(self._server.wait_closed(), timeout=5)
             except Exception:
                 pass
             self._server = None
 
     async def _handle(self, creader: asyncio.StreamReader, cwriter: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self._conns.add(task)
         try:
             request_line = await creader.readline()
             if not request_line:
@@ -168,6 +180,8 @@ class LocalRoutingProxy:
         except Exception:
             pass
         finally:
+            if task is not None:
+                self._conns.discard(task)
             try:
                 cwriter.close()
             except Exception:
