@@ -17,6 +17,7 @@ import traceback
 from config import settings, sync_settings_from_db
 from logger import log
 from scraper.db import ScrapeRunRepo
+from scraper.findmyremote import FindMyRemoteScraper
 from scraper.glassdoor import GlassdoorScraper
 from scraper.indeed import IndeedScraper
 from scraper.himalayas import HimalayasScraper
@@ -31,6 +32,7 @@ SCRAPERS = {
     "weworkremotely": WeWorkRemotelyScraper,
     "remoteok": RemoteOkScraper,
     "himalayas": HimalayasScraper,
+    "findmyremote": FindMyRemoteScraper,
     # Add more sites here as their links arrive — each reuses the same core.
 }
 
@@ -44,6 +46,7 @@ def enabled_sites() -> list[str]:
         "weworkremotely": settings.enable_weworkremotely,
         "remoteok": settings.enable_remoteok,
         "himalayas": settings.enable_himalayas,
+        "findmyremote": settings.enable_findmyremote,
     }
     return [s for s in SCRAPERS if flags.get(s, True)]
 

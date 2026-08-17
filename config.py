@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     enable_weworkremotely: bool = False
     enable_remoteok: bool = False
     enable_himalayas: bool = False
+    enable_findmyremote: bool = True
 
     # ── Indeed ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
@@ -95,6 +96,13 @@ class Settings(BaseSettings):
     himalayas_use_proxy: bool = True  # route the API + resolver through the residential proxy
     himalayas_resolve_apply: bool = True  # 2nd pass: browser resolves real employer apply URLs
 
+    # ── FindMyRemote (public JSON API; apply URL is the employer's own ATS link) ──
+    #    Store the normal browsable link — its query string is forwarded to the API.
+    findmyremote_search_url: str = (
+        "https://findmyremote.ai/jobs?employmentType=fulltime&employmentType=parttime&location=us")
+    findmyremote_role_regex: str = r"engineer|developer|software|programmer"  # "" = every role
+    findmyremote_use_proxy: bool = True
+
     # ── Scheduler (random gap between runs, hours) ──
     schedule_min_hours: float = 1.0
     schedule_max_hours: float = 3.0
@@ -118,6 +126,8 @@ DB_MANAGED_KEYS: tuple = (
     "enable_remoteok", "remoteok_api_url",
     "enable_himalayas", "himalayas_api_url", "himalayas_country", "himalayas_role_regex",
     "himalayas_use_proxy", "himalayas_resolve_apply",
+    "enable_findmyremote", "findmyremote_search_url", "findmyremote_role_regex",
+    "findmyremote_use_proxy",
 )
 
 
