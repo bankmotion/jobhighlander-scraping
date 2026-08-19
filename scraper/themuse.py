@@ -187,8 +187,10 @@ def _relative_posted(text: str) -> Optional[date]:
 
 class TheMuseScraper(BaseScraper):
     site = "themuse"
-    #: Staging until reviewed — promote to "jobs" once the data looks right.
-    table = "jobs_temp"
+    #: Live table — non-US postings are rejected on the listing page and rows
+    #: without an employer apply URL are never stored, so what lands here is
+    #: app-ready as scraped.
+    table = "jobs"
 
     def __init__(self):
         super().__init__()
