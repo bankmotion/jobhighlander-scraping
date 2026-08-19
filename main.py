@@ -97,6 +97,15 @@ async def run_site(site: str) -> bool:
 
 async def main() -> None:
     sync_settings_from_db()  # apply super-admin DB overrides before anything else
+
+    # The proxy is mandatory: without it every site sees the server's datacenter
+    # IP. Fail the whole cycle rather than scrape from the wrong address.
+    from scraper.local_proxy import verify_proxy
+    ok, detail = verify_proxy()
+    if not ok:
+        log.error("Proxy check FAILED — {}. Aborting; fix PROXY_URL and re-run.", detail)
+        sys.exit(2)
+    log.info("Proxy OK — {}", detail)  # apply super-admin DB overrides before anything else
     sites = resolve_sites(sys.argv[1:])
     if not sites:
         log.warning("No sites to scrape — all ENABLE_* flags are off.")

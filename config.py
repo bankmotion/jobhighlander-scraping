@@ -10,7 +10,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent
 
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
@@ -82,7 +81,6 @@ class Settings(BaseSettings):
     #    The category page (not the /search endpoint) carries the apply-exposed
     #    employers; big-name "senior" search results are login-gated & get skipped. ──
     weworkremotely_search_url: str = "https://weworkremotely.com/remote-software-developer-jobs"
-    weworkremotely_use_proxy: bool = True
     weworkremotely_max_per_company: int = 3
 
     # ── RemoteOK (public JSON API + browser apply-URL resolution; jobs_temp until promoted) ──
@@ -95,7 +93,6 @@ class Settings(BaseSettings):
     himalayas_api_url: str = "https://himalayas.app/jobs/api"
     himalayas_country: str = "United States"  # matches the API's locationRestrictions
     himalayas_role_regex: str = r"engineer|developer|software|programmer"
-    himalayas_use_proxy: bool = True  # route the API + resolver through the residential proxy
     himalayas_resolve_apply: bool = True  # 2nd pass: browser resolves real employer apply URLs
 
     # ── FindMyRemote (public JSON API; apply URL is the employer's own ATS link) ──
@@ -103,7 +100,6 @@ class Settings(BaseSettings):
     findmyremote_search_url: str = (
         "https://findmyremote.ai/jobs?employmentType=fulltime&employmentType=parttime&location=us")
     findmyremote_role_regex: str = r"engineer|developer|software|programmer"  # "" = every role
-    findmyremote_use_proxy: bool = True
 
     # ── Jobicy (real browser: the employer link only appears after clicking
     #    "Apply Now"). Cloudflare here rate-limits hard, hence the pacing knobs. ──
@@ -116,7 +112,6 @@ class Settings(BaseSettings):
         "&filter_job_level%5B%5D=senior"
         "&filter_by_day_check=on&filter_by_day=7")
     jobicy_role_regex: str = ""          # "" = keep every role the listing returns
-    jobicy_use_proxy: bool = True
     jobicy_delay_s: float = 8.0          # pause between job pages — do NOT lower
     jobicy_cdp_port: int = 9224
 
@@ -124,12 +119,10 @@ class Settings(BaseSettings):
     #    The search URL does the work: `date-posted/last_7d` filters server-side
     #    and `?page=N` paginates. NOTE the slug is `remote-flexible` — the
     #    reversed form is routable but silently matches 0 jobs. ──
-    #: One search URL per line — each is paginated with ?page=N in turn.
-    #: One search URL per line — each is paginated with ?page=N in turn.
-    themuse_search_urls: str = "https://www.themuse.com/search/location/remote-flexible/keyword/software-engineering/date-posted/last_7d"
+    themuse_search_url: str = (
+        "https://www.themuse.com/search/location/remote-flexible/keyword/software-engineering/date-posted/last_7d")
     themuse_us_only: bool = True   # drop postings whose hidden city is outside the US
     themuse_role_regex: str = ""      # "" = keep every role the listing returns
-    themuse_use_proxy: bool = True
     themuse_delay_s: float = 6.0      # pause between job pages
     themuse_cdp_port: int = 9225      # own port so runs can't clash          # own port so it can't clash with other runs
 
@@ -139,9 +132,7 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
-
 settings = Settings()
-
 
 # ── DB-managed settings (super-admins edit these via the scraper_settings table).
 # They override the .env/code defaults above; everything else (db_*, secrets)
@@ -151,25 +142,23 @@ DB_MANAGED_KEYS: tuple = (
     "enable_indeed", "indeed_search_url", "indeed_max_pages",
     "enable_glassdoor", "glassdoor_search_url",
     "enable_jobright", "jobright_recommend_url", "jobright_recommend_api",
-    "enable_weworkremotely", "weworkremotely_search_url", "weworkremotely_use_proxy",
+    "enable_weworkremotely", "weworkremotely_search_url",
     "weworkremotely_max_per_company",
     "enable_remoteok", "remoteok_api_url",
     "enable_himalayas", "himalayas_api_url", "himalayas_country", "himalayas_role_regex",
-    "himalayas_use_proxy", "himalayas_resolve_apply",
+    "himalayas_resolve_apply",
     "enable_findmyremote", "findmyremote_search_url", "findmyremote_role_regex",
-    "findmyremote_use_proxy",
-    "enable_jobicy", "jobicy_search_url", "jobicy_role_regex", "jobicy_use_proxy",
+    
+    "enable_jobicy", "jobicy_search_url", "jobicy_role_regex",
     "jobicy_delay_s",
-    "enable_themuse", "themuse_search_urls", "themuse_us_only", "themuse_role_regex",
-    "themuse_use_proxy", "themuse_delay_s",
+    "enable_themuse", "themuse_search_url", "themuse_us_only", "themuse_role_regex",
+    "themuse_delay_s",
 )
-
 
 def _fmt(val) -> str:
     if isinstance(val, bool):
         return "true" if val else "false"
     return "" if val is None else str(val)
-
 
 def _coerce(current, raw: str):
     if isinstance(current, bool):
@@ -180,7 +169,6 @@ def _coerce(current, raw: str):
         except (TypeError, ValueError):
             return current
     return raw
-
 
 def sync_settings_from_db() -> None:
     """Seed missing DB-managed keys from the current settings, then override the

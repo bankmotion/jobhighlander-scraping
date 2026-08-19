@@ -115,7 +115,7 @@ class JobicyScraper(BaseScraper):
 
             from patchright.async_api import async_playwright
             server = None
-            if settings.jobicy_use_proxy and settings.proxy_url:
+            if settings.proxy_url:
                 # Chrome cannot send proxy credentials; front it with the relay.
                 from scraper.local_proxy import LocalRoutingProxy
                 direct = settings.proxy_bypass.split(",") if settings.proxy_bypass else []

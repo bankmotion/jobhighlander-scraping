@@ -146,7 +146,7 @@ class WeWorkRemotelyScraper(BaseScraper):
         super().__init__()  # sets up self.repo + counts (browser stays unused)
         self.listing_url = settings.weworkremotely_search_url
         self._proxies = None
-        if settings.weworkremotely_use_proxy and settings.proxy_url:
+        if settings.proxy_url:
             self._proxies = {"http": settings.proxy_url, "https": settings.proxy_url}
         self._cookies = {}  # filled in run() — may need an interactive sign-in
 

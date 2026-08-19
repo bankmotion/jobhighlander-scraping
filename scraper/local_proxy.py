@@ -278,3 +278,36 @@ class LocalRoutingProxy:
                     pass
 
         await asyncio.gather(copy(cr, uw), copy(ur, cw), return_exceptions=True)
+
+
+def verify_proxy(timeout: int = 25) -> tuple:
+    """Check the upstream proxy actually works. Returns (ok, detail).
+
+    Run at the start of every scrape cycle: if the residential proxy is down or
+    the credentials have lapsed, the scrapers would silently fall back to the
+    server's own datacenter IP — which gets the sites' Cloudflare tiers angry and
+    quietly poisons a run. Better to stop.
+    """
+    from config import settings
+    if not settings.proxy_url:
+        return False, "PROXY_URL is not set"
+    try:
+        from curl_cffi import requests as creq
+    except Exception as e:  # pragma: no cover
+        return False, f"curl_cffi unavailable: {e}"
+    px = {"http": settings.proxy_url, "https": settings.proxy_url}
+    try:
+        direct = creq.get("https://api.ipify.org?format=json", timeout=timeout).json().get("ip")
+    except Exception:
+        direct = None
+    try:
+        r = creq.get("https://api.ipify.org?format=json", proxies=px, timeout=timeout)
+        exit_ip = r.json().get("ip")
+    except Exception as e:
+        return False, f"proxy request failed: {str(e)[:90]}"
+    if not exit_ip:
+        return False, "proxy returned no IP"
+    if direct and exit_ip == direct:
+        # Traffic isn't actually leaving through the proxy.
+        return False, f"exit IP {exit_ip} equals the direct IP — proxy not in use"
+    return True, f"exit IP {exit_ip}" + (f" (direct {direct})" if direct else "")

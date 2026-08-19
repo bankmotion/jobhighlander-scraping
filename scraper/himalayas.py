@@ -82,7 +82,7 @@ class HimalayasScraper(BaseScraper):
         # Route through the shared residential proxy (same as WWR) so the API
         # isn't hit from the server's own datacenter IP.
         self._proxies = None
-        if settings.himalayas_use_proxy and settings.proxy_url:
+        if settings.proxy_url:
             self._proxies = {"http": settings.proxy_url, "https": settings.proxy_url}
 
     # HTTP-only lifecycle (no browser) + a browser pass for the apply URLs.
@@ -415,7 +415,7 @@ async def resolve_pending(limit: int = 0) -> int:
     proc = relay = pw = None
     try:
         server = None
-        if settings.himalayas_use_proxy and settings.proxy_url:
+        if settings.proxy_url:
             # Chrome can't send proxy credentials, so front the authenticated
             # upstream with the project's local relay.
             from scraper.local_proxy import LocalRoutingProxy

@@ -124,7 +124,7 @@ class FindMyRemoteScraper(BaseScraper):
         self._role = (re.compile(settings.findmyremote_role_regex, re.I)
                       if settings.findmyremote_role_regex else None)
         self._proxies = None
-        if settings.findmyremote_use_proxy and settings.proxy_url:
+        if settings.proxy_url:
             self._proxies = {"http": settings.proxy_url, "https": settings.proxy_url}
 
     # HTTP-only lifecycle (no browser).

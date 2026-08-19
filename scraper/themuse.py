@@ -217,7 +217,7 @@ class TheMuseScraper(BaseScraper):
 
             from patchright.async_api import async_playwright
             server = None
-            if settings.themuse_use_proxy and settings.proxy_url:
+            if settings.proxy_url:
                 # Chrome cannot send proxy credentials; front it with the relay.
                 from scraper.local_proxy import LocalRoutingProxy
                 direct = settings.proxy_bypass.split(",") if settings.proxy_bypass else []
@@ -465,23 +465,10 @@ class TheMuseScraper(BaseScraper):
     def _saved(self) -> int:
         return self.counts["inserted"] + self.counts["updated"] + self.counts["unchanged"]
 
-    @staticmethod
-    def _search_urls() -> list:
-        """One URL per line (blank lines/commas tolerated)."""
-        raw = settings.themuse_search_urls or ""
-        # splitlines() rather than a regex: the value is edited in a textarea,
-        # so it arrives newline-separated (commas tolerated too).
-        raw = (settings.themuse_search_urls or '').replace(',', chr(10))
-        return [u.strip() for u in raw.splitlines() if u.strip().startswith('http')]
-
     async def scrape_browser(self, ctx, page) -> None:
-        urls = self._search_urls()
-        log.info("[themuse] {} search URL(s) configured", len(urls))
-        for i, base in enumerate(urls, 1):
-            if settings.max_jobs and self._saved() >= settings.max_jobs:
-                break
-            log.info("[themuse] ({}/{}) listing: {}", i, len(urls), base)
-            await self._scrape_listing(ctx, page, base)
+        base = settings.themuse_search_url
+        log.info("[themuse] listing: {}", base)
+        await self._scrape_listing(ctx, page, base)
 
     async def _scrape_listing(self, ctx, page, base: str) -> None:
         cf_fails = 0
