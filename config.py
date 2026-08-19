@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     enable_remoteok: bool = False
     enable_himalayas: bool = False
     enable_findmyremote: bool = True
+    enable_jobicy: bool = True
 
     # ── Indeed ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
@@ -103,6 +104,21 @@ class Settings(BaseSettings):
     findmyremote_role_regex: str = r"engineer|developer|software|programmer"  # "" = every role
     findmyremote_use_proxy: bool = True
 
+    # ── Jobicy (real browser: the employer link only appears after clicking
+    #    "Apply Now"). Cloudflare here rate-limits hard, hence the pacing knobs. ──
+    jobicy_search_url: str = (
+        "https://jobicy.com/jobs?search_region=usa"
+        "&filter_job_industry%5B%5D=software-engineering"
+        "&filter_job_type%5B%5D=contract&filter_job_type%5B%5D=full-time"
+        "&filter_job_type%5B%5D=part-time"
+        "&filter_job_level%5B%5D=junior&filter_job_level%5B%5D=midweight"
+        "&filter_job_level%5B%5D=senior"
+        "&filter_by_day_check=on&filter_by_day=7")
+    jobicy_role_regex: str = ""          # "" = keep every role the listing returns
+    jobicy_use_proxy: bool = True
+    jobicy_delay_s: float = 8.0          # pause between job pages — do NOT lower
+    jobicy_cdp_port: int = 9224          # own port so it can't clash with other runs
+
     # ── Scheduler (random gap between runs, hours) ──
     schedule_min_hours: float = 1.0
     schedule_max_hours: float = 3.0
@@ -128,6 +144,8 @@ DB_MANAGED_KEYS: tuple = (
     "himalayas_use_proxy", "himalayas_resolve_apply",
     "enable_findmyremote", "findmyremote_search_url", "findmyremote_role_regex",
     "findmyremote_use_proxy",
+    "enable_jobicy", "jobicy_search_url", "jobicy_role_regex", "jobicy_use_proxy",
+    "jobicy_delay_s",
 )
 
 

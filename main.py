@@ -21,6 +21,7 @@ from scraper.findmyremote import FindMyRemoteScraper
 from scraper.glassdoor import GlassdoorScraper
 from scraper.indeed import IndeedScraper
 from scraper.himalayas import HimalayasScraper
+from scraper.jobicy import JobicyScraper
 from scraper.jobright import JobRightScraper
 from scraper.remoteok import RemoteOkScraper
 from scraper.weworkremotely import WeWorkRemotelyScraper
@@ -33,6 +34,7 @@ SCRAPERS = {
     "remoteok": RemoteOkScraper,
     "himalayas": HimalayasScraper,
     "findmyremote": FindMyRemoteScraper,
+    "jobicy": JobicyScraper,
     # Add more sites here as their links arrive — each reuses the same core.
 }
 
@@ -47,6 +49,7 @@ def enabled_sites() -> list[str]:
         "remoteok": settings.enable_remoteok,
         "himalayas": settings.enable_himalayas,
         "findmyremote": settings.enable_findmyremote,
+        "jobicy": settings.enable_jobicy,
     }
     return [s for s in SCRAPERS if flags.get(s, True)]
 
