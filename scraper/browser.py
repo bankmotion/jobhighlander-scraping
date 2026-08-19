@@ -111,6 +111,22 @@ async def is_challenged(page) -> tuple[bool, str, Optional[dict]]:
     return False, title, None
 
 
+async def is_settled(page, title: str) -> bool:
+    """False while Chrome is still mid-navigation.
+
+    During a reload the document is empty and the title is blank or Chrome's
+    "Loading <url>" placeholder — the challenge iframe simply hasn't been parsed
+    yet, so `is_challenged()` reads clean. Treating that snapshot as "cleared" is
+    how a still-challenged page slipped through and scraped 0 cards."""
+    t = (title or "").strip().lower()
+    if not t or t.startswith("loading "):
+        return False
+    try:
+        return bool(((await page.inner_text("body")) or "").strip())
+    except Exception:
+        return False
+
+
 async def clear_challenge(
     page,
     max_wait_s: int = 120,
@@ -147,12 +163,26 @@ async def clear_challenge(
     clicks = 0
     last_click = -10_000
     title = ""
+    saw_challenge = False  # once true, a clean read has to be confirmed
+    clean_reads = 0
     while elapsed < max_wait_s:
         challenged, title, bbox = await is_challenged(page)
-        if not challenged:
-            if elapsed:
+        if not challenged and await is_settled(page, title):
+            # A page that was never challenged is done the moment it settles.
+            # After a challenge, take a second consecutive clean read first: the
+            # interstitial blanks itself while it reloads, and that gap used to
+            # be mistaken for success.
+            if not saw_challenge:
+                return True
+            clean_reads += 1
+            if clean_reads >= 2:
                 log.info("Checkpoint cleared after ~{}s (title={!r})", elapsed, title)
-            return True
+                return True
+            await asyncio.sleep(2)
+            elapsed += 2
+            continue
+        clean_reads = 0
+        saw_challenge = saw_challenge or challenged
 
         if (
             bbox

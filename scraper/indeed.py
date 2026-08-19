@@ -22,10 +22,16 @@ from logger import log
 from scraper import human
 from scraper.auth.google_auth import GoogleAuthService
 from scraper.base_scraper import BaseScraper, ScrapedJob
+from scraper.browser import is_challenged
+from scraper.local_proxy import remembered_challenge_proxy
 from scraper.session import SessionStore
 
 GOOGLE_BUTTON = 'iframe[src*="accounts.google.com/gsi/button"]'
 INDEED_DOMAINS = ("indeed.com",)
+
+#: How many consecutive organic postings older than `max_age_days` end a
+#: date-sorted walk. >1 so a single out-of-order card can't cut the run short.
+_STALE_RUN_TO_STOP = 3
 
 # Runs on a viewjob page: pull company, company link, job type, location, the
 # external apply link ("Apply on company site"), and the full description.
@@ -67,14 +73,13 @@ _EXTRACT_JS = r"""
   // Indeed's embedded job data has the true posted time per job (works even
   // when logged-in cards show a "Visited …" label instead).
   const rel = {};
-  try {
-    const pd = window.mosaic && window.mosaic.providerData && window.mosaic.providerData['mosaic-provider-jobcards'];
-    const results = pd && pd.metaData && pd.metaData.mosaicProviderJobCardsModel && pd.metaData.mosaicProviderJobCardsModel.results;
-    if (results) results.forEach((r) => {
-      if (!r.jobkey) return;
+  const addRecords = (results) => {
+    (results || []).forEach((r) => {
+      const jk = r.jobkey || r.jobKey;
+      if (!jk) return;
       const wm = r.remoteWorkModel || {};
       const fl = (r.formattedLocation || '').trim();
-      rel[r.jobkey] = {
+      rel[jk] = {
         rt: (r.formattedRelativeTime || '').trim(),
         pub: r.pubDate || null,
         // "Remote" is a work model, not a place → store location empty for it.
@@ -86,9 +91,53 @@ _EXTRACT_JS = r"""
           const s = r.salarySnippet || r.estimatedSalary || r.extractedSalary || {};
           return (s.text || s.salaryText || s.formattedRange || '').trim();
         })(),
+        // Promoted cards are injected ahead of the organic list and ignore the
+        // sort order, so a stale one must never end a date-sorted walk.
+        sponsored: !!(r.adId || (r.link || '').indexOf('/pagead/clk') === 0),
       };
     });
+  };
+
+  // Preferred source: the live model, when the page's globals are reachable.
+  try {
+    const pd = window.mosaic && window.mosaic.providerData && window.mosaic.providerData['mosaic-provider-jobcards'];
+    const results = pd && pd.metaData && pd.metaData.mosaicProviderJobCardsModel && pd.metaData.mosaicProviderJobCardsModel.results;
+    if (results && results.length) addRecords(results);
   } catch (e) {}
+
+  // Fallback, and in practice the one that runs: patchright evaluates in an
+  // ISOLATED world, which shares the DOM but NOT the page's JS globals — so
+  // `window.mosaic` above reads as undefined and every posted date, location
+  // and job type came back empty. The same model is serialised into the
+  // #mosaic-data script tag, and reading a tag's text is plain DOM access, so
+  // scan it out of there: seek the jobcards model, then balance-match the
+  // "results" array (a plain JSON.parse of the tag would choke — it is a
+  // script assigning several globals, not a JSON document).
+  if (!Object.keys(rel).length) {
+    try {
+      const el = document.getElementById('mosaic-data');
+      const t = el ? (el.textContent || '') : '';
+      const anchor = t.indexOf('mosaicProviderJobCardsModel');
+      const rs = anchor >= 0 ? t.indexOf('"results":[', anchor) : -1;
+      const start = rs >= 0 ? t.indexOf('[', rs) : -1;
+      if (start >= 0) {
+        let depth = 0, end = -1, inStr = false, esc = false;
+        for (let j = start; j < t.length; j++) {
+          const c = t[j];
+          if (inStr) {
+            if (esc) esc = false;
+            else if (c.charCodeAt(0) === 92) esc = true;  // backslash
+            else if (c === '"') inStr = false;
+            continue;
+          }
+          if (c === '"') inStr = true;
+          else if (c === '[' || c === '{') depth++;
+          else if (c === ']' || c === '}') { depth--; if (!depth) { end = j; break; } }
+        }
+        if (end > start) addRecords(JSON.parse(t.slice(start, end + 1)));
+      }
+    } catch (e) {}
+  }
   const cards = document.querySelectorAll('div.job_seen_beacon, td.resultContent, div.cardOutline');
   cards.forEach((card) => {
     const a = card.querySelector('a[data-jk]') || card.querySelector('[data-jk]');
@@ -123,17 +172,36 @@ _EXTRACT_JS = r"""
       const m = (card.innerText || '').match(/(just posted|today|(?:posted|employer active|active)\b[^\n]*?\bago)/i);
       if (m && !/visited/i.test(m[0])) posted = m[0].trim();
     }
+    // `jobTypes` is routinely empty in the model even when the card shows the
+    // type, so read it off the card's attribute chips ("Full-time", "Contract"
+    // — the chips also carry unrelated things like shift patterns, hence the
+    // whitelist, and the salary chip shares the same testid).
+    let jobType = info.jobType || '';
+    if (!jobType) {
+      const chips = Array.from(card.querySelectorAll('[data-testid*="attribute_snippet" i]'))
+        .filter((e) => !/salary/i.test(e.getAttribute('data-testid') || ''))
+        .map((e) => (e.innerText || '').trim())
+        .filter((s) => /^(full.?time|part.?time|contract|temporary|internship|permanent|per diem|apprenticeship|seasonal|freelance|volunteer)$/i.test(s));
+      jobType = Array.from(new Set(chips)).join(', ');
+    }
+    // A card with no location chip and no model location is remote-only.
+    const location = info.location || (
+      locEl && !/^remote$/i.test((locEl.innerText || '').trim()) ? locEl.innerText.trim() : ''
+    );
     out.push({
       jk,
       title: titleEl ? titleEl.innerText.trim() : '',
       company: info.company || (companyEl ? companyEl.innerText.trim() : ''),
-      location: info.location || '',
-      remote: !!info.remote,
-      jobType: info.jobType || '',
+      location: location,
+      remote: info.remote !== undefined
+        ? !!info.remote
+        : /remote/i.test((locEl && locEl.innerText) || ''),
+      jobType: jobType,
       salary: info.salary || (salEl ? salEl.innerText.trim() : ''),
       snippet: snipEl ? snipEl.innerText.trim() : '',
       posted: posted.slice(0, 64),
       pubDate: info.pub || null,
+      sponsored: !!info.sponsored,
     });
   });
   return out;
@@ -174,6 +242,17 @@ class IndeedScraper(BaseScraper):
     site = "indeed"
 
     def __init__(self):
+        # Indeed's results sit behind a Cloudflare Turnstile, and roughly half of
+        # IPRoyal's residential exits 504 on CONNECT to its verification shard.
+        # On such an exit the widget can never validate — the clicks land, the
+        # checkbox stays empty, and every page reads as "0 results". Probe for an
+        # exit that reaches the shard before we launch, and remember it so the IP
+        # (and the profile's cf_clearance) stays stable between runs.
+        base = settings.indeed_proxy_url or settings.proxy_url
+        if base:
+            self.proxy_url = remembered_challenge_proxy(
+                base, settings.indeed_proxy_session_file, prefix="in"
+            )
         super().__init__()
         self.google = GoogleAuthService()
 
@@ -185,6 +264,11 @@ class IndeedScraper(BaseScraper):
         shows the account menu instead."""
         page = self.browser.page
         try:
+            # A checkpoint page carries neither control; without this it matched
+            # the account branch below and reported a bogus "Already logged in".
+            challenged, _, _ = await is_challenged(page)
+            if challenged:
+                return False
             signin = await page.query_selector('a[data-gnav-element-name="SignIn"]')
             if signin and await signin.is_visible():
                 return False
@@ -296,6 +380,7 @@ class IndeedScraper(BaseScraper):
         # date-sorted results) we reach postings older than max_age_days.
         date_sorted = "sort=date" in settings.indeed_search_url
         stop = False
+        stale = 0  # consecutive organic postings older than max_age_days
         for page_num in range(settings.indeed_max_pages):
             if stop or (settings.max_jobs and len(jobs) >= settings.max_jobs):
                 break
@@ -310,6 +395,18 @@ class IndeedScraper(BaseScraper):
             await human.think(settings.min_action_delay, settings.max_action_delay)
 
             raw = await self.browser.page.evaluate(_EXTRACT_JS)
+            if not raw:
+                # No cards can mean the listing ended OR that a checkpoint is
+                # still sitting on top of it. Say which, instead of silently
+                # reporting "end of results" for a blocked run.
+                challenged, title, _ = await is_challenged(self.browser.page)
+                if challenged:
+                    await self.browser.screenshot(f"screenshots/indeed_blocked_p{page_num + 1}.png")
+                    log.error(
+                        "Indeed page {} still behind a checkpoint (title={!r}) — stopping.",
+                        page_num + 1, title,
+                    )
+                    break
             # Indeed repeats sponsored cards under the same jk — dedupe across all
             # pages so max_jobs counts UNIQUE postings.
             new_cards = []
@@ -336,10 +433,29 @@ class IndeedScraper(BaseScraper):
                     skipped += 1
                     continue
                 posted = compute_posted_at(item.get("posted"), item.get("pubDate"))
-                if date_sorted and self._too_old(posted):
-                    log.info("Reached postings older than {}d — stopping (date-sorted).", settings.max_age_days)
-                    stop = True
-                    break
+                # Only ORGANIC postings say anything about how far down the date
+                # sort we've walked: promoted cards are injected at the top of
+                # every page regardless of age (the first one is routinely
+                # "30+ days ago"), so treating one as the end of the listing
+                # would end the run on page 1. Require a RUN of stale organic
+                # postings too — Indeed sprinkles the odd out-of-order card in.
+                if date_sorted and not item.get("sponsored"):
+                    if self._too_old(posted):
+                        stale += 1
+                        if stale >= _STALE_RUN_TO_STOP:
+                            log.info(
+                                "{} consecutive postings older than {}d — stopping (date-sorted).",
+                                stale, settings.max_age_days,
+                            )
+                            stop = True
+                            break
+                    else:
+                        stale = 0
+                if self._too_old(posted):
+                    # Would be dropped by save() anyway — don't spend a detail
+                    # fetch (and its throttle) on it.
+                    self.counts["too_old"] += 1
+                    continue
                 description = item.get("snippet", "")
                 # location / remote / job_type / company come from the reliable
                 # listing mosaic; the detail page only adds description,
@@ -382,8 +498,29 @@ class IndeedScraper(BaseScraper):
         return jobs
 
     @staticmethod
-    def _page_url(base: str, page_num: int) -> str:
+    def _search_url(base: str) -> str:
+        """The configured search URL with Indeed's own recency filter applied.
+
+        `sort=date` is not enough on its own. Indeed front-loads every page with
+        promoted cards that ignore the sort, and for a narrow query its "newest"
+        organic results can still be weeks old — the configured search returned
+        ZERO postings inside the 7-day window, while the very same query plus
+        `fromage` returned a full page of them (and almost no ads). `fromage`
+        filters server-side, so ask for exactly the window `max_age_days`
+        already defines. An explicit `fromage` in the URL is left alone."""
+        if not settings.max_age_days:
+            return base
+        u = urlparse(base)
+        q = parse_qs(u.query, keep_blank_values=True)
+        if "fromage" in q:
+            return base
+        q["fromage"] = [str(settings.max_age_days)]
+        return urlunparse(u._replace(query=urlencode(q, doseq=True)))
+
+    @classmethod
+    def _page_url(cls, base: str, page_num: int) -> str:
         """Indeed paginates via &start=N (10 results per page)."""
+        base = cls._search_url(base)
         if page_num <= 0:
             return base
         u = urlparse(base)
@@ -421,7 +558,11 @@ class IndeedScraper(BaseScraper):
             popup["p"] = p
 
         def _is_final(u: str) -> bool:
-            if not u or "about:blank" in u:
+            # Must be a real web page. A popup starts life on about:blank or
+            # chrome://new-tab-page/, and "not an indeed.com URL" alone counted
+            # those as the answer — one job was stored with an apply URL of
+            # chrome://new-tab-page/.
+            if not u or not u.startswith(("http://", "https://")):
                 return False
             if "smartapply.indeed.com" in u:
                 return True
@@ -429,6 +570,11 @@ class IndeedScraper(BaseScraper):
             return "indeed.com" not in u
 
         # Locate the apply control: Indeed Apply button, or a company-site link/button.
+        # "Apply on company site" used to be an <a href> and is now a bare
+        # <button> — no id, no testid, no aria-label, no href — so the id/href
+        # selectors below all miss it and EVERY job was being dropped for having
+        # no apply URL. Match it by text inside the apply containers too, most
+        # specific first so we can't grab a neighbouring control like "Save".
         btn = None
         for sel in (
             "#indeedApplyButton",
@@ -437,11 +583,16 @@ class IndeedScraper(BaseScraper):
             "[data-testid='apply-button-container'] a",
             "#jobsearch-ViewJobButtons-container a[aria-label*='Apply' i]",
             "#jobsearch-ViewJobButtons-container button[aria-label*='Apply' i]",
+            "#applyButtonLinkContainer button:has-text('Apply')",
+            "[data-testid='apply-button-container'] button:has-text('Apply')",
+            "#jobsearch-ViewJobButtons-container button:has-text('Apply')",
+            "button:has-text('Apply on company site')",
         ):
             btn = await page.query_selector(sel)
             if btn:
                 break
         if not btn:
+            log.warning("No apply control found on {}", (page.url or "")[:90])
             return None
 
         try:
@@ -463,7 +614,10 @@ class IndeedScraper(BaseScraper):
                     pass
 
             url = None
-            for _ in range(10):
+            # "Apply on company site" lands on an Indeed rc/clk stub first and
+            # only then bounces to the employer's ATS, so give the redirect
+            # chain room to finish before calling it a miss.
+            for _ in range(20):
                 await asyncio.sleep(1)
                 p = popup.get("p")
                 if p and _is_final(p.url or ""):

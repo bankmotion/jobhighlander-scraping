@@ -20,14 +20,13 @@ import random
 import re
 from datetime import datetime, timedelta, timezone
 
-from pathlib import Path
 
 from config import settings
 from logger import log
 from scraper import human
 from scraper.auth.google_auth import GoogleAuthService
 from scraper.base_scraper import BaseScraper, ScrapedJob
-from scraper.local_proxy import pick_challenge_capable_proxy, session_of
+from scraper.local_proxy import remembered_challenge_proxy
 from scraper.session import SessionStore
 
 GLASSDOOR_DOMAINS = ("glassdoor.com",)
@@ -208,30 +207,11 @@ class GlassdoorScraper(BaseScraper):
         # remember it so the IP — and thus cf_clearance — stays stable.
         base = settings.glassdoor_proxy_url or settings.proxy_url
         if base:
-            self.proxy_url = pick_challenge_capable_proxy(
-                base, preferred_session=self._load_proxy_session()
+            self.proxy_url = remembered_challenge_proxy(
+                base, settings.glassdoor_proxy_session_file, prefix="gd"
             )
-            self._save_proxy_session(session_of(self.proxy_url))
         super().__init__()
         self.google = GoogleAuthService()
-
-    @staticmethod
-    def _load_proxy_session():
-        try:
-            return Path(settings.glassdoor_proxy_session_file).read_text(encoding="utf-8").strip() or None
-        except Exception:
-            return None
-
-    @staticmethod
-    def _save_proxy_session(session) -> None:
-        if not session:
-            return
-        try:
-            p = Path(settings.glassdoor_proxy_session_file)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(session, encoding="utf-8")
-        except Exception:
-            pass
 
     async def is_logged_in(self) -> bool:
         """When logged in, glassdoor.com redirects to the member dashboard

@@ -65,6 +65,24 @@ def _is_employer_url(url: str) -> bool:
     return bool(p.hostname) and not _JUNK_HOST_RE.search(f"{p.scheme}://{p.netloc}{p.path}")
 
 
+#: Heading that opens the posting proper. Everything above it is chrome — the
+#: nav, the SIGNED-IN ACCOUNT MENU (username + plan badge), and the "Role
+#: snapshot" panel whose fields are already parsed into columns below. Exactly
+#: one occurrence in all 13 stored rows, at offset 915-963.
+_DETAILS_START = "OPPORTUNITY DETAILS"
+
+#: Trailing chrome starts at a "Show more" toggle followed by this CTA. The CTA
+#: is the cut point because "Show more" is generic enough to plausibly occur in
+#: a posting; the leftover toggle line is stripped by `_SHOW_MORE_RE`.
+_RESUME_CTA = "Upload your resume now"
+_SHOW_MORE_RE = re.compile(r"\n\s*Show more\s*\Z")
+
+#: A cleaned description shorter than this means the carving went wrong.
+#: `db.py` upserts with `description = VALUES(description)`, so storing a
+#: truncated row would silently replace a good one — fall back to the raw body.
+_MIN_DESC_LEN = 1000
+
+
 def _clean(t: str) -> str:
     t = _html.unescape(t or "")
     t = re.sub(r"[ \t]+\n", "\n", t)
@@ -236,13 +254,31 @@ class JobicyScraper(BaseScraper):
         if not apply_url:
             return None  # never store a Jobicy link as the apply target
 
-        # Trim the site chrome that follows the description.
+        # `body` is the WHOLE page, so trim the site chrome off BOTH ends. Only
+        # `desc` is narrowed — the regexes below still read the full `body`.
         desc = body
-        for marker in ("NEXT STEP", "Role snapshot", "Apply for this job"):
+        # Above: nav + account menu + the "Role snapshot" panel. Cutting here is
+        # also what keeps the logged-in account's name out of the stored text.
+        i = desc.find(_DETAILS_START)
+        if 0 < i < 2000:
+            desc = desc[i + len(_DETAILS_START):]
+        # Below: the resume CTA, then the trust/company footer. "Role snapshot"
+        # and "Apply for this job" are NOT tail markers — both sit in the header
+        # chrome, so trimming at them would have truncated the posting to ~250
+        # chars had "NEXT STEP" ever gone missing.
+        cut = -1
+        for marker in (_RESUME_CTA, "NEXT STEP"):
             i = desc.find(marker)
             if i > 400:
-                desc = desc[:i]
+                cut = i
                 break
+        if cut > 0:
+            desc = desc[:cut]
+        else:
+            # The template changed and the footer is now riding along in every
+            # description. Surface it in the run log rather than in the prompt.
+            log.warning("jobicy: no tail marker matched for {} - template may have changed", url)
+        desc = _SHOW_MORE_RE.sub("", desc)
 
         company = None
         m = re.search(r"\bat\s+(.+?)\s+-\s+Jobicy", page_title)
@@ -273,10 +309,19 @@ class JobicyScraper(BaseScraper):
                 return c || '';
             }""") or None
 
+        cleaned = _clean(desc)
+        if len(cleaned) < _MIN_DESC_LEN:
+            # Carving produced something implausibly short. The upsert would
+            # replace a good stored row with this, so keep the uncarved text.
+            log.warning(
+                "jobicy: carved description only {} chars for {} - keeping raw body",
+                len(cleaned), url)
+            cleaned = _clean(body)
+
         return ScrapedJob(
             site_job_id=self._job_id(url),
             title=title[:500],
-            description=_clean(desc),
+            description=cleaned,
             link=url,
             location=location,
             posted_at=posted,

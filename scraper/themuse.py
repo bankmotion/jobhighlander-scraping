@@ -150,9 +150,13 @@ def _detail_fields(body: str) -> dict:
     m = re.search(r"Client-provided location\(s\):\s*(.+)", body)
     if m:
         out["location"] = re.sub(r"\s+", " ", m.group(1)).strip()[:255]
-    m = re.search(r"Employment Type:\s*([A-Z_]+)", body)
-    if m:
-        out["job_type"] = _EMPLOYMENT.get(m.group(1).strip(), m.group(1).title())
+    # Last match, not first: one row (5499) has the employer's own
+    # "Employment Type: Full-Time" above the Muse block, and a first-match
+    # regex captured a bare "F" from it. The Muse-generated value is last.
+    types = re.findall(r"Employment Type:\s*([A-Z_]+)", body)
+    if types:
+        val = types[-1].strip()
+        out["job_type"] = _EMPLOYMENT.get(val, val.title())
     m = re.search(r"Posted:\s*(\d{4}-\d{2}-\d{2})(?:T[\d:]+)?", body)
     if m:
         try:
@@ -160,6 +164,42 @@ def _detail_fields(body: str) -> dict:
         except ValueError:
             pass
     return out
+
+
+#: Last line of the company card The Muse prints above every posting; the
+#: employer's own text begins immediately after it. Exactly one occurrence in
+#: all 270 stored rows, at offset 263-545 — the upper bound in `_scrape_job`
+#: keeps a malformed page from swallowing the posting instead of the chrome.
+#: Matched case-insensitively: the caps come from CSS `text-transform`, and the
+#: `company_url` lookup 40 lines above already hedges the same way.
+_COMPANY_CARD_RE = re.compile(r"VIEW COMPANY PROFILE", re.I)
+
+#: Newsletter signup spliced into the MIDDLE of the posting text (seen anywhere
+#: from offset ~1.1k to ~6.9k), so no amount of end-trimming reaches it.
+#:
+#: The gap is BOUNDED. With an unbounded `.*?`, a page that renders the widget
+#: twice while the first copy loses its closing line — the closer is legal
+#: boilerplate that gets reworded — makes the lazy span run from the first
+#: opener to the only closer and swallow the entire posting between them.
+#: Measured at 6646 chars in, 10 chars out. `db.py` upserts with
+#: `description = VALUES(description)`, so that would overwrite a good row.
+#: Observed block length is 259-298 chars across 270/270 rows; 600 is ~2x.
+_NEWSLETTER_RE = re.compile(
+    r"Want more jobs like this\?.{0,600}?"
+    r"By signing up, you agree to our Terms of Service & Privacy Policy\.",
+    re.S)
+
+#: Anchors the Muse-generated metadata block that closes every posting. The
+#: three markers this replaced (`APPLY ON COMPANY SITE`, `Similar Jobs`,
+#: `About The Muse`) occur ZERO times in all 270 stored rows — `inner_text`
+#: never reached them — so they were decorative, not fallbacks. These two are
+#: what actually appears; a miss is logged rather than passing silently.
+_TAIL_MARKERS = ("Client-provided location(s):",)
+_TAIL_ANCHOR_RE = re.compile(r"\nJob ID:\s*\S+\n|\nPosted:\s*\d{4}-")
+
+#: A cleaned description shorter than this means the carving went wrong. Storing
+#: it would overwrite a good row via the upsert, so fall back to the raw body.
+_MIN_DESC_LEN = 1000
 
 
 def _clean(t: str) -> str:
@@ -440,17 +480,49 @@ class TheMuseScraper(BaseScraper):
         location = fields.get("location") or (loc_text[:255] if loc_text else None)
         job_type = fields.get("job_type")
 
+        # `body` is the WHOLE page, so the posting has to be carved out of it:
+        # chrome sits above it, below it, and — uniquely here — spliced into the
+        # middle of it. `body` itself is left intact; `_detail_fields` and
+        # `_relative_posted` above still regex the full page text.
         desc = body
-        for marker in ("APPLY ON COMPANY SITE", "Similar Jobs", "About The Muse"):
+        # Above: the nav, then the company card. Cut through the card's last line.
+        m = _COMPANY_CARD_RE.search(desc)
+        if m and 0 < m.start() < 1200:
+            desc = desc[m.end():]
+        # Inside: the newsletter widget, which a boundary slice cannot reach.
+        desc = _NEWSLETTER_RE.sub("", desc)
+        # Below: the Muse-generated metadata block. `_detail_fields` has already
+        # parsed it, so it is duplicate text in the description.
+        cut = -1
+        for marker in _TAIL_MARKERS:
             i = desc.find(marker)
             if i > 400:
-                desc = desc[:i]
+                cut = i
                 break
+        if cut < 0:
+            m = _TAIL_ANCHOR_RE.search(desc, 400)
+            cut = m.start() if m else -1
+        if cut > 0:
+            desc = desc[:cut]
+        else:
+            # Not fatal — but it means the template changed, and the metadata
+            # block is now riding along in every description. Surface it in the
+            # run log instead of letting it reach the prompt unnoticed.
+            log.warning("themuse: no tail marker matched for {} — template may have changed", url)
+
+        cleaned = _clean(desc)
+        if len(cleaned) < _MIN_DESC_LEN:
+            # Carving produced something implausibly short. The upsert would
+            # replace a good stored row with this, so keep the uncarved text.
+            log.warning(
+                "themuse: carved description only {} chars for {} — keeping raw body",
+                len(cleaned), url)
+            cleaned = _clean(body)
 
         return ScrapedJob(
             site_job_id=self._job_id(url),
             title=title[:500],
-            description=_clean(desc),
+            description=cleaned,
             link=url,
             location=location,
             posted_at=posted,

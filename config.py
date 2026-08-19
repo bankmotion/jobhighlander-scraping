@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # ── Indeed ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
     indeed_session_file: str = str(BASE_DIR / "sessions" / "indeed_session.json")
+    # Indeed fronts its results with a Cloudflare Turnstile whose verification
+    # backend 504s on a good half of the residential exit IPs — the widget then
+    # never validates no matter how well we click it. Pre-flight for an exit that
+    # reaches it (own session, isolated from Glassdoor's) and remember it.
+    indeed_proxy_url: Optional[str] = None
+    indeed_proxy_session_file: str = str(BASE_DIR / "sessions" / "indeed_proxy_session.txt")
     # Global scrape limits (apply to every scraper). Prefer bounding by recency:
     max_jobs: int = 0  # 0 = no count cap (scrape all, bounded by max_age_days + pagination)
     max_age_days: int = 7  # only keep jobs posted within N days (0 = no age limit)

@@ -19,6 +19,7 @@ import random
 import re
 import socket
 import string
+from pathlib import Path
 from typing import Iterable, Optional
 from urllib.parse import urlparse
 
@@ -75,6 +76,7 @@ def pick_challenge_capable_proxy(
     attempts: int = 8,
     host: str = CHALLENGE_PROBE_HOST,
     preferred_session: Optional[str] = None,
+    prefix: str = "gd",
 ) -> str:
     """Return a proxy URL whose exit IP can tunnel to the Cloudflare challenge
     host. Tries a previously-good session first (stable IP keeps cf_clearance
@@ -98,7 +100,7 @@ def pick_challenge_capable_proxy(
         return base_url
 
     for i in range(attempts):
-        session = "gd" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        session = prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
         candidate = with_session(base_url, session)
         if _tunnel_ok(candidate, host):
             log.info("Proxy pre-flight: session {!r} reaches {} [OK] (try {}/{})", session, host, i + 1, attempts)
@@ -106,6 +108,31 @@ def pick_challenge_capable_proxy(
         log.info("Proxy pre-flight: session {!r} cannot reach {} (try {}/{})", session, host, i + 1, attempts)
     log.warning("Proxy pre-flight: no exit IP reached {} in {} tries — using base session.", host, attempts)
     return base_url
+
+
+def remembered_challenge_proxy(base_url: str, session_file: str, prefix: str = "gd") -> str:
+    """`pick_challenge_capable_proxy` backed by a remembered-session file.
+
+    Probing costs a few seconds and lands on a different exit IP each time, so
+    we persist whichever sticky session worked and try it first on the next run
+    — a stable IP is what keeps the cf_clearance cookie in the Chrome profile
+    valid instead of re-triggering the challenge every time."""
+    if not base_url:
+        return base_url
+    path = Path(session_file)
+    try:
+        preferred = path.read_text(encoding="utf-8").strip() or None
+    except Exception:
+        preferred = None
+    chosen = pick_challenge_capable_proxy(base_url, preferred_session=preferred, prefix=prefix)
+    session = session_of(chosen)
+    if session:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(session, encoding="utf-8")
+        except Exception:
+            pass
+    return chosen
 
 
 class LocalRoutingProxy:
