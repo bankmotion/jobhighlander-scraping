@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     enable_himalayas: bool = False
     enable_findmyremote: bool = True
     enable_jobicy: bool = True
+    enable_themuse: bool = True
 
     # ── Indeed ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
@@ -117,7 +118,20 @@ class Settings(BaseSettings):
     jobicy_role_regex: str = ""          # "" = keep every role the listing returns
     jobicy_use_proxy: bool = True
     jobicy_delay_s: float = 8.0          # pause between job pages — do NOT lower
-    jobicy_cdp_port: int = 9224          # own port so it can't clash with other runs
+    jobicy_cdp_port: int = 9224
+
+    # ── The Muse (real browser; the API never yields the employer's apply URL).
+    #    The search URL does the work: `date-posted/last_7d` filters server-side
+    #    and `?page=N` paginates. NOTE the slug is `remote-flexible` — the
+    #    reversed form is routable but silently matches 0 jobs. ──
+    #: One search URL per line — each is paginated with ?page=N in turn.
+    #: One search URL per line — each is paginated with ?page=N in turn.
+    themuse_search_urls: str = "https://www.themuse.com/search/location/remote-flexible/keyword/software-engineering/date-posted/last_7d"
+    themuse_us_only: bool = True   # drop postings whose hidden city is outside the US
+    themuse_role_regex: str = ""      # "" = keep every role the listing returns
+    themuse_use_proxy: bool = True
+    themuse_delay_s: float = 6.0      # pause between job pages
+    themuse_cdp_port: int = 9225      # own port so runs can't clash          # own port so it can't clash with other runs
 
     # ── Scheduler (random gap between runs, hours) ──
     schedule_min_hours: float = 1.0
@@ -146,6 +160,8 @@ DB_MANAGED_KEYS: tuple = (
     "findmyremote_use_proxy",
     "enable_jobicy", "jobicy_search_url", "jobicy_role_regex", "jobicy_use_proxy",
     "jobicy_delay_s",
+    "enable_themuse", "themuse_search_urls", "themuse_us_only", "themuse_role_regex",
+    "themuse_use_proxy", "themuse_delay_s",
 )
 
 
