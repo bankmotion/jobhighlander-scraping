@@ -1,17 +1,80 @@
 """MySQL writer — upserts scraped jobs into the Prisma-owned `jobs` table.
 
 Prisma owns the schema/migrations; here we only INSERT ... ON DUPLICATE KEY
-UPDATE against it, keyed on the unique (site, site_job_id). Column names match
-the Prisma @map()s.
+UPDATE against it. Column names match the Prisma @map()s.
+
+TWO unique keys guard the table, and they answer different questions:
+
+  (site, site_job_id)   identifies a LISTING on a board.
+  (site, fingerprint)   identifies the JOB itself — see `_fingerprint`.
+
+The second exists because the first is not stable at the source. The Muse
+regenerates the hash in its URL slug on every render, and Glassdoor issues
+several listing ids for one posting, so keying only on the source id let the
+same job into the table five times.
 """
 from __future__ import annotations
 
+import hashlib
+import re
+import unicodedata
 from typing import Optional
 
 import pymysql
 
 from config import settings
 from logger import log
+
+
+def _norm(s: Optional[str]) -> str:
+    """Lower-case, strip accents, collapse every run of non-alphanumerics to one
+    space. That last step is what makes the comparison hold: two captures of the
+    same posting differed by a single character of whitespace, which an exact
+    hash would have treated as two different jobs."""
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+#: Field separator between fingerprint parts. Every part normalises to
+#: [a-z0-9 ] and `site` is an enum of lowercase words, so a pipe can never occur
+#: inside a part and cannot blur the boundary between two of them.
+#: MUST match SEP in backend/src/scripts/dedupe-jobs.ts — the two write the same
+#: column, and a separator mismatch makes them hash the same job differently.
+_SEP = "|"
+
+
+def _fingerprint(
+    site: str,
+    company: Optional[str],
+    title: str,
+    location: Optional[str],
+    description: str,
+) -> str:
+    """Content identity: site + company + title + location + the first 100
+    normalised characters of the description.
+
+    Company is included even though the description prefix usually names it:
+    without it, "Software Engineer (Full Stack)" in Lehi, UT collapsed two
+    different employers into one row.
+
+    Only a PREFIX of the description, because boards append their own footers
+    and the same posting is re-worded over time; the opening paragraph is the
+    part that stays put.
+
+    Must stay in lockstep with `fingerprint()` in
+    backend/src/scripts/dedupe-jobs.ts — the two write the same column.
+    """
+    parts = [
+        site,
+        _norm(company),
+        _norm(title),
+        _norm(location),
+        _norm(description)[:100],
+    ]
+    return hashlib.sha1(_SEP.join(parts).encode("utf-8")).hexdigest()
 
 # Tables this writer is allowed to target (guards against SQL injection since
 # the table name is interpolated into the statement, not bound as a param).
@@ -20,8 +83,8 @@ _ALLOWED_TABLES = {"jobs", "jobs_temp"}
 _UPSERT_SQL = """
 INSERT INTO {table}
     (site, site_job_id, title, description, job_url, apply_url, company, company_url,
-     job_type, remote, location, salary, posted_at, created_at, updated_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
+     job_type, remote, location, salary, posted_at, fingerprint, created_at, updated_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
 ON DUPLICATE KEY UPDATE
     title = VALUES(title),
     description = VALUES(description),
@@ -35,6 +98,10 @@ ON DUPLICATE KEY UPDATE
     location = VALUES(location),
     salary = COALESCE(VALUES(salary), salary),
     posted_at = VALUES(posted_at),
+    -- Deliberately NOT updated: site_job_id and fingerprint.
+    -- Whichever unique key matched is the row's identity; rewriting it on every
+    -- pass would rename the listing each time a source rotates its id, and
+    -- would make existing_keys() miss on the next run.
     updated_at = UTC_TIMESTAMP(3)
 """
 
@@ -97,13 +164,19 @@ class JobRepository:
         if self._conn is None:
             self.connect()
         assert self._conn is not None
+        fingerprint = _fingerprint(site, company, title, location, description)
         with self._conn.cursor() as cur:
             cur.execute(
                 _UPSERT_SQL.format(table=self.table),
                 (site, site_job_id, title, description, link, apply_url, company,
-                 company_url, job_type, remote, location, salary, posted_at),
+                 company_url, job_type, remote, location, salary, posted_at, fingerprint),
             )
             # PyMySQL/MySQL rowcount: 1 = inserted, 2 = updated, 0 = no change.
+            #
+            # A duplicate posting arriving under a NEW site_job_id now matches on
+            # (site, fingerprint) instead, so it lands here as "updated" — the
+            # stored row is refreshed and no second row is created. That is the
+            # skip: the write is not rejected, it is absorbed.
             return {1: "inserted", 2: "updated", 0: "unchanged"}.get(cur.rowcount, "unknown")
 
     def __enter__(self) -> "JobRepository":

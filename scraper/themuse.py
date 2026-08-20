@@ -249,7 +249,9 @@ class TheMuseScraper(BaseScraper):
         proc = relay = pw = None
         try:
             try:
-                self._seen = self.repo.existing_keys(self.site)
+                # Stored ids carry a hash that has since rotated, so both
+                # sides of the membership test are stripped to their stable base.
+                self._seen = {self._skip_key(k) for k in self.repo.existing_keys(self.site)}
                 log.info("[themuse] {} jobs already stored — their pages will be skipped",
                          len(self._seen))
             except Exception:
@@ -311,9 +313,33 @@ class TheMuseScraper(BaseScraper):
 
     @staticmethod
     def _job_id(url: str) -> str:
-        """/jobs/<company>/<slug> — stable across pages."""
+        """/jobs/<company>/<slug> — the listing id we store.
+
+        NOT stable: The Muse appends a six-hex hash to the slug and regenerates
+        it on every render, so the same posting comes back under a new id each
+        pass. The `(site, fingerprint)` unique key is what actually keeps those
+        out of the table; see scraper/db.py. Use `_skip_key` for comparisons.
+        """
         m = re.search(r"/jobs/([^/?#]+/[^/?#]+)", url or "")
         return (m.group(1) if m else (url or ""))[:190]
+
+    @staticmethod
+    def _skip_key(job_id_or_url: str) -> str:
+        """The listing id with the volatile hash suffix removed.
+
+        Used ONLY to decide whether a posting has already been scraped, never
+        as the stored key. Without it the "already seen" test compares a stored
+        id against a freshly rotated one, never matches, and every detail page
+        is re-opened on every run — each one a Cloudflare challenge plus delays.
+
+        The trade-off is that two genuinely different requisitions at the same
+        company with the same title share a slug base, so the second would be
+        skipped rather than fetched. That is a miss on a rare posting, weighed
+        against re-fetching several hundred pages every run; nothing is lost
+        from the table either way, because the skip only suppresses a fetch.
+        """
+        base = TheMuseScraper._job_id(job_id_or_url)
+        return re.sub(r"-[0-9a-f]{6}$", "", base)
 
     async def _job_cards(self, page) -> list:
         """[(url, card_text)] for every result on the page.
@@ -570,7 +596,7 @@ class TheMuseScraper(BaseScraper):
 
             fresh, off_us = [], 0
             for href, card in cards:
-                if self._job_id(href) in self._seen:
+                if self._skip_key(href) in self._seen:
                     continue
                 # Reject non-US HERE — opening the job first would cost a page
                 # load and an apply click for nothing.
@@ -600,7 +626,7 @@ class TheMuseScraper(BaseScraper):
                     job = await self._scrape_job(ctx, page, link)
                     if job:
                         self.save(job)
-                        self._seen.add(job.site_job_id)
+                        self._seen.add(self._skip_key(job.site_job_id))
                 except Exception as e:
                     log.warning("[themuse] {} error: {}", link[-44:], str(e)[:70])
                 await asyncio.sleep(self._delay + random.uniform(0, 2.0))
