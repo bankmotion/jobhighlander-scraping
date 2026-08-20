@@ -144,6 +144,8 @@ settings = Settings()
 # They override the .env/code defaults above; everything else (db_*, secrets)
 # stays .env-only. Add a key here to surface it in the admin UI. ──
 DB_MANAGED_KEYS: tuple = (
+    # Gap between scheduler cycles, re-read every cycle — see scheduler.py.
+    "schedule_min_hours", "schedule_max_hours",
     "max_jobs", "max_age_days", "proxy_url", "fetch_descriptions",
     "enable_indeed", "indeed_search_url", "indeed_max_pages",
     "enable_glassdoor", "glassdoor_search_url",
@@ -167,11 +169,27 @@ def _fmt(val) -> str:
     return "" if val is None else str(val)
 
 def _coerce(current, raw: str):
+    """Parse a stored string back to the type the setting already has.
+
+    Order matters: bool before int, because `isinstance(True, int)` is True in
+    Python and a checkbox would otherwise come back as 0/1.
+
+    Floats are handled explicitly. Without this branch every float setting fell
+    through to `return raw` and came back as a STRING, so `random.uniform()` or
+    `asyncio.sleep()` on it raises. The existing float settings only survived
+    because each call site happened to wrap them in `float(...)` itself — a
+    per-site workaround that the next float setting would not inherit.
+    """
     if isinstance(current, bool):
         return str(raw).strip().lower() in ("1", "true", "yes", "on")
     if isinstance(current, int):
         try:
             return int(str(raw).strip())
+        except (TypeError, ValueError):
+            return current
+    if isinstance(current, float):
+        try:
+            return float(str(raw).strip())
         except (TypeError, ValueError):
             return current
     return raw

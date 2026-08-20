@@ -237,7 +237,12 @@ class JobRightScraper(BaseScraper):
     async def _fetch_recommendations(self, want: int) -> list:
         """Load the recommend feed: intercept the page's OWN authenticated XHR for
         the first page (a raw call returns empty — the SPA adds auth headers), then
-        page for more by replaying those exact headers."""
+        page for more by replaying those exact headers.
+
+        `want` follows the `max_jobs` convention: a POSITIVE number caps how many
+        to return, and 0 (or less) means no cap at all. Every use of it below has
+        to honour that — treating 0 as a literal limit yields nothing.
+        """
         page = self.browser.page
         collected: dict = {}
         headers_box: dict = {}
@@ -335,7 +340,12 @@ class JobRightScraper(BaseScraper):
                 page.remove_listener("response", _on_resp)
             except Exception:
                 pass
-        return list(collected.values())[:want]
+        # `want <= 0` means "no count cap", exactly as the pagination loop above
+        # reads it — so it must NOT be passed to a slice. `[:0]` returns an empty
+        # list, which silently threw away every job collected and made the run
+        # report a clean success with nothing scraped.
+        items = list(collected.values())
+        return items[:want] if want > 0 else items
 
     def _to_job(self, item: dict) -> ScrapedJob:
         """Map one JobRight recommendation (jobResult + companyResult) to a ScrapedJob."""
