@@ -76,6 +76,41 @@ def _fingerprint(
     ]
     return hashlib.sha1(_SEP.join(parts).encode("utf-8")).hexdigest()
 
+
+#: Column widths in the Prisma-owned `jobs` table, which Prisma alone may change
+#: — so oversized values are cut to fit here rather than widened over there.
+#:
+#: MySQL runs strict by default, so ONE oversized value rejects the whole row and
+#: raises out of upsert_job, which no scraper catches: a single Himalayas job
+#: open in enough countries that `location` (a join of every one of them) passed
+#: 255 characters ended a run that had already stored 380 jobs. A clamped field
+#: costs the tail of one string; an unclamped one costs the rest of the pass.
+_MAX_LEN = {
+    "site_job_id": 191,
+    "title": 512,
+    "job_url": 1024,
+    "apply_url": 2048,
+    "company": 255,
+    "company_url": 1024,
+    "job_type": 64,
+    "location": 255,
+    "salary": 255,
+}
+# `description` is deliberately absent: it is longtext, and the fingerprint
+# already reads only its first 100 normalised characters.
+
+
+def _clamp(field: str, value: Optional[str]) -> Optional[str]:
+    """Cut `value` to its column width. Counts codepoints, which is what
+    utf8mb4 counts too, so `len` here and CHAR_LENGTH there agree."""
+    limit = _MAX_LEN[field]
+    if value is None or len(value) <= limit:
+        return value
+    log.warning("{} is {} chars, truncating to {}: {!r}...",
+                field, len(value), limit, value[:60])
+    return value[:limit]
+
+
 # Tables this writer is allowed to target (guards against SQL injection since
 # the table name is interpolated into the statement, not bound as a param).
 _ALLOWED_TABLES = {"jobs", "jobs_temp"}
@@ -164,6 +199,18 @@ class JobRepository:
         if self._conn is None:
             self.connect()
         assert self._conn is not None
+        # Clamp BEFORE fingerprinting, not after. dedupe-jobs.ts hashes the
+        # STORED row, so hashing the full-length value here would have the two
+        # disagree on exactly the rows that got truncated.
+        site_job_id = _clamp("site_job_id", site_job_id)
+        title = _clamp("title", title)
+        link = _clamp("job_url", link)
+        apply_url = _clamp("apply_url", apply_url)
+        company = _clamp("company", company)
+        company_url = _clamp("company_url", company_url)
+        job_type = _clamp("job_type", job_type)
+        location = _clamp("location", location)
+        salary = _clamp("salary", salary)
         fingerprint = _fingerprint(site, company, title, location, description)
         with self._conn.cursor() as cur:
             cur.execute(
