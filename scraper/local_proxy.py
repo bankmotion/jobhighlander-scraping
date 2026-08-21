@@ -31,6 +31,9 @@ from logger import log
 # block. We probe for an exit that can actually reach it before scraping.
 CHALLENGE_PROBE_HOST = "brunhild.challenges.cloudflare.com"
 
+#: Fresh sticky sessions to try when retiring a challenge-blocked exit IP.
+_ROTATE_ATTEMPTS = 8
+
 
 def with_session(proxy_url: str, session: str) -> str:
     """Swap the IPRoyal sticky-session token in a proxy URL (→ a different IP)."""
@@ -133,6 +136,57 @@ def remembered_challenge_proxy(base_url: str, session_file: str, prefix: str = "
         except Exception:
             pass
     return chosen
+
+
+def rotate_challenge_proxy(base_url: str, session_file: str, prefix: str = "gd") -> str:
+    """Retire the remembered sticky session and pin a DIFFERENT exit IP.
+
+    `remembered_challenge_proxy` deliberately re-pins whichever session last
+    worked, because a stable IP is what keeps cf_clearance valid. Its only
+    health check is `_tunnel_ok` — "can this exit still open a CONNECT tunnel to
+    the verification shard" — and that is a different question from "is this
+    exit still trusted". When Cloudflare starts scoring a residential exit as a
+    bot, the probe keeps reporting [OK], so the remembered file pins the scraper
+    to a dead IP on every subsequent run. Indeed returned 0 jobs for hours that
+    way while the pre-flight logged success each time.
+
+    Call this when the CHALLENGE failed, as opposed to the tunnel.
+    """
+    if not base_url:
+        return base_url
+    path = Path(session_file)
+    try:
+        burned = path.read_text(encoding="utf-8").strip() or None
+    except Exception:
+        burned = None
+
+    # Skip the burned session AND the base one — we want an exit we have not
+    # just been refused on, and the base session may be the flagged one.
+    avoid = {burned, session_of(base_url)}
+    for i in range(_ROTATE_ATTEMPTS):
+        session = prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        if session in avoid:
+            continue
+        candidate = with_session(base_url, session)
+        if _tunnel_ok(candidate, CHALLENGE_PROBE_HOST):
+            log.info("Proxy rotate: retired {!r}, pinned fresh session {!r} (try {}/{})",
+                     burned, session, i + 1, _ROTATE_ATTEMPTS)
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(session, encoding="utf-8")
+            except Exception:
+                pass
+            return candidate
+
+    # Nothing fresh answered. Still forget the burned token, so the next run
+    # re-probes from scratch instead of preferring the exit that just failed.
+    log.warning("Proxy rotate: no fresh exit reached {} in {} tries — forgetting {!r} anyway.",
+                CHALLENGE_PROBE_HOST, _ROTATE_ATTEMPTS, burned)
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    return base_url
 
 
 class LocalRoutingProxy:
