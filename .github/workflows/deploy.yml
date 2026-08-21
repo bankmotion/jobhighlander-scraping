@@ -1,0 +1,38 @@
+name: Deploy Scraper
+
+# Every push to master ships. Also runnable by hand from the Actions tab, which
+# is how you redeploy without an empty commit.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+# Serialise deploys. `cancel-in-progress: false` because killing a run midway
+# through `npm ci` would leave the server in a half-updated state.
+concurrency:
+  group: deploy-scraping
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to jobhighlander.com
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Pin the host key: without this, StrictHostKeyChecking=no would let
+          # anything answering on that IP receive the deploy key.
+          printf '%s\n' '95.217.82.36 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIACeee37HdIkzaRZkBu3RTy9vkg44BlofBno9nn9jrKl' > ~/.ssh/known_hosts
+
+          # The key is locked to a forced command on the server
+          # (/var/www/deploy-scraping.sh), so the command sent here is ignored —
+          # it cannot open a shell or run anything else.
+          ssh -i ~/.ssh/deploy_key \
+              -o IdentitiesOnly=yes \
+              -o BatchMode=yes \
+              -o ConnectTimeout=30 \
+              root@95.217.82.36 deploy
