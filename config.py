@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     enable_findmyremote: bool = True
     enable_jobicy: bool = True
     enable_themuse: bool = True
+    enable_linkedin: bool = True
 
     # ── Indeed ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
@@ -107,6 +108,18 @@ class Settings(BaseSettings):
         "https://findmyremote.ai/jobs?employmentType=fulltime&employmentType=parttime&location=us")
     findmyremote_role_regex: str = r"engineer|developer|software|programmer"  # "" = every role
 
+    # ── LinkedIn (public "guest" endpoints; no login, no browser) ──
+    #    Store the normal browsable search link — its filters (keywords, geoId,
+    #    f_TPR, …) are forwarded to the guest endpoint verbatim.
+    linkedin_search_url: str = (
+        "https://www.linkedin.com/jobs/remote-software-engineer-jobs"
+        "?keywords=Remote%20Software%20Engineer&location=United%20States"
+        "&geoId=103644278&f_TPR=r604800")
+    linkedin_role_regex: str = r"engineer|developer|software|programmer"  # "" = every role
+    #: Guest endpoints throttle to a 429 if hit hard, and a pass costs one detail
+    #: request per job, so pace it.
+    linkedin_delay_s: float = 1.5
+
     # ── Jobicy (real browser: the employer link only appears after clicking
     #    "Apply Now"). Cloudflare here rate-limits hard, hence the pacing knobs. ──
     jobicy_search_url: str = (
@@ -161,6 +174,7 @@ DB_MANAGED_KEYS: tuple = (
     "jobicy_delay_s",
     "enable_themuse", "themuse_search_url", "themuse_us_only", "themuse_role_regex",
     "themuse_delay_s",
+    "enable_linkedin", "linkedin_search_url", "linkedin_role_regex", "linkedin_delay_s",
 )
 
 def _fmt(val) -> str:
