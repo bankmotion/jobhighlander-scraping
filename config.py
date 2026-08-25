@@ -52,16 +52,6 @@ class Settings(BaseSettings):
     enable_findmyremote: bool = True
     enable_jobicy: bool = True
     enable_themuse: bool = True
-<<<<<<< HEAD
-    # NOTE: there is no LinkedInScraper in `main.py`'s SCRAPERS registry in this
-    # working copy, so this flag does not add LinkedIn to `main.py all` here —
-    # `enabled_sites()` iterates the registry, not the flags. It exists because
-    # the settings row is already live in the database (jobs.site has carried
-    # 'linkedin' rows since 2026-08-21) and the admin UI has to be able to
-    # edit it. Whichever copy of the scraper is actually running LinkedIn reads
-    # the same row.
-=======
->>>>>>> f162c2afb649baeaf9b2b90114c34f57ae0043df
     enable_linkedin: bool = True
 
     # ── Indeed ──
@@ -155,18 +145,6 @@ class Settings(BaseSettings):
     themuse_delay_s: float = 6.0      # pause between job pages
     themuse_cdp_port: int = 9225      # own port so runs can't clash          # own port so it can't clash with other runs
 
-    # ── LinkedIn ──
-    # Defaults mirror the values already stored in `scraper_settings` so a fresh
-    # database seeds to what this one is running today.
-    linkedin_search_url: str = (
-        "https://www.linkedin.com/jobs/remote-software-engineer-jobs"
-        "?keywords=Remote%20Software%20Engineer&location=United%20States"
-        "&geoId=103644278&f_TPR=r604800")
-    linkedin_role_regex: str = "engineer|developer|software|programmer"
-    linkedin_delay_s: float = 1.5     # pause between job pages
-    # float, not int: `_coerce` keys off the CURRENT value's type, so declaring
-    # this an int would round 1.5 to 1 every time the DB value is applied.
-
     # ── Scheduler (random gap between runs, hours) ──
     schedule_min_hours: float = 1.0
     schedule_max_hours: float = 3.0
@@ -196,12 +174,7 @@ DB_MANAGED_KEYS: tuple = (
     "jobicy_delay_s",
     "enable_themuse", "themuse_search_url", "themuse_us_only", "themuse_role_regex",
     "themuse_delay_s",
-<<<<<<< HEAD
-    "enable_linkedin", "linkedin_search_url", "linkedin_role_regex",
-    "linkedin_delay_s",
-=======
     "enable_linkedin", "linkedin_search_url", "linkedin_role_regex", "linkedin_delay_s",
->>>>>>> f162c2afb649baeaf9b2b90114c34f57ae0043df
 )
 
 def _fmt(val) -> str:
