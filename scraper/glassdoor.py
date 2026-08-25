@@ -21,7 +21,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 
-from config import settings
+from config import settings, site_uses_proxy
 from logger import log
 from scraper import human
 from scraper.auth.google_auth import GoogleAuthService
@@ -205,7 +205,7 @@ class GlassdoorScraper(BaseScraper):
         # backend shard 504s on many residential exit IPs. Pre-flight probe for
         # an exit that can reach it (its own session, isolated from Indeed), and
         # remember it so the IP — and thus cf_clearance — stays stable.
-        base = settings.glassdoor_proxy_url or settings.proxy_url
+        base = (settings.glassdoor_proxy_url or settings.proxy_url) if site_uses_proxy("glassdoor") else ""
         if base:
             self.proxy_url = remembered_challenge_proxy(
                 base, settings.glassdoor_proxy_session_file, prefix="gd"

@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 
-from config import settings
+from config import settings, site_uses_proxy
 from logger import log
 from scraper import human
 from scraper.auth.google_auth import GoogleAuthService
@@ -55,7 +55,7 @@ class JobRightScraper(BaseScraper):
     user_data_dir = settings.jobright_user_data_dir
 
     def __init__(self):
-        self.proxy_url = settings.jobright_proxy_url or settings.proxy_url
+        self.proxy_url = (settings.jobright_proxy_url or settings.proxy_url) if site_uses_proxy("jobright") else ""
         super().__init__()
         self.google = GoogleAuthService()
 

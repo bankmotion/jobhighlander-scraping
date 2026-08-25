@@ -55,9 +55,10 @@ class RemoteOkScraper(BaseScraper):
     #: Promote to "jobs" once verified.
     table = "jobs_temp"
     user_data_dir = settings.remoteok_user_data_dir
-    #: Direct — RemoteOK is global, and external employer apply pages shouldn't
-    #: be tunnelled through the residential proxy.
-    proxy_url = ""
+    #: Routing comes from `remoteok_use_proxy`, which defaults OFF: RemoteOK is
+    #: global, and external employer apply pages shouldn't be tunnelled through
+    #: the residential proxy. Left to the toggle rather than pinned here so the
+    #: setting in the admin UI is the one place that decides.
 
     BASE = "https://remoteok.com"
 

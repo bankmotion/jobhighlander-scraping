@@ -31,7 +31,7 @@ from typing import Optional
 
 from curl_cffi.requests import AsyncSession
 
-from config import settings
+from config import settings, proxy_for
 from logger import log
 from scraper.base_scraper import BaseScraper, ScrapedJob
 from scraper.browser import clear_challenge
@@ -82,8 +82,8 @@ class HimalayasScraper(BaseScraper):
         # Route through the shared residential proxy (same as WWR) so the API
         # isn't hit from the server's own datacenter IP.
         self._proxies = None
-        if settings.proxy_url:
-            self._proxies = {"http": settings.proxy_url, "https": settings.proxy_url}
+        if proxy_for("himalayas"):
+            self._proxies = {"http": proxy_for("himalayas"), "https": proxy_for("himalayas")}
 
     # HTTP-only lifecycle (no browser) + a browser pass for the apply URLs.
     async def run(self) -> None:
@@ -415,12 +415,12 @@ async def resolve_pending(limit: int = 0) -> int:
     proc = relay = pw = None
     try:
         server = None
-        if settings.proxy_url:
+        if proxy_for("himalayas"):
             # Chrome can't send proxy credentials, so front the authenticated
             # upstream with the project's local relay.
             from scraper.local_proxy import LocalRoutingProxy
             direct = settings.proxy_bypass.split(",") if settings.proxy_bypass else []
-            relay = LocalRoutingProxy(settings.proxy_url, direct)
+            relay = LocalRoutingProxy(proxy_for("himalayas"), direct)
             server = "http://127.0.0.1:%d" % await relay.start()
         proc, endpoint = launch_chrome(profile, 9222, server)
         pw = await async_playwright().start()

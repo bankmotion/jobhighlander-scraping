@@ -54,6 +54,27 @@ class Settings(BaseSettings):
     enable_themuse: bool = True
     enable_linkedin: bool = True
 
+    # ── Per-site proxy routing ──
+    # Whether each site's traffic goes through `proxy_url` (the shared IPRoyal
+    # residential upstream). Per site because the trade-off differs: Indeed and
+    # Glassdoor NEED a residential exit to clear Cloudflare, while a public JSON
+    # API works fine direct and only pays the proxy's latency and bandwidth for
+    # nothing. Read through `proxy_for()` below, never by touching these flags.
+    #
+    # Defaults preserve the behaviour each scraper had before the toggles
+    # existed: everything routed through the proxy except RemoteOK, which was
+    # pinned direct in code.
+    indeed_use_proxy: bool = True
+    glassdoor_use_proxy: bool = True
+    jobright_use_proxy: bool = True
+    weworkremotely_use_proxy: bool = True
+    remoteok_use_proxy: bool = False
+    himalayas_use_proxy: bool = True
+    findmyremote_use_proxy: bool = True
+    jobicy_use_proxy: bool = True
+    themuse_use_proxy: bool = True
+    linkedin_use_proxy: bool = True
+
     # ── Indeed ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
     indeed_session_file: str = str(BASE_DIR / "sessions" / "indeed_session.json")
@@ -175,7 +196,38 @@ DB_MANAGED_KEYS: tuple = (
     "enable_themuse", "themuse_search_url", "themuse_us_only", "themuse_role_regex",
     "themuse_delay_s",
     "enable_linkedin", "linkedin_search_url", "linkedin_role_regex", "linkedin_delay_s",
+    # Per-site proxy routing (see `proxy_for`).
+    "indeed_use_proxy", "glassdoor_use_proxy", "jobright_use_proxy",
+    "weworkremotely_use_proxy", "remoteok_use_proxy", "himalayas_use_proxy",
+    "findmyremote_use_proxy", "jobicy_use_proxy", "themuse_use_proxy",
+    "linkedin_use_proxy",
 )
+
+
+def site_uses_proxy(site: str) -> bool:
+    """Whether `site` is configured to route through the shared proxy.
+
+    Unknown sites default to True, matching how every scraper behaved before
+    these toggles existed — a new scraper is proxied until someone says not to.
+    """
+    return bool(getattr(settings, f"{site}_use_proxy", True))
+
+
+def proxy_for(site: str) -> str:
+    """The upstream proxy URL `site` should use, or "" to go direct.
+
+    Returns "" and NOT None on purpose. None already means something else here:
+    `StealthBrowser` treats a None proxy as "fall back to settings.proxy_url",
+    so returning it for a site whose toggle is OFF would silently proxy the
+    site anyway. Only a non-None falsy value actually disables it — the same
+    idiom RemoteOK used when it pinned `proxy_url = ""` in code.
+
+    Call this instead of reading `settings.proxy_url` directly; a scraper that
+    reads the global is a toggle that does nothing.
+    """
+    if not site_uses_proxy(site):
+        return ""
+    return settings.proxy_url or ""
 
 def _fmt(val) -> str:
     if isinstance(val, bool):

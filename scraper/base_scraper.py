@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from config import settings
+from config import settings, proxy_for
 from logger import log
 from scraper.browser import StealthBrowser
 from scraper.db import JobRepository
@@ -41,12 +41,18 @@ class BaseScraper:
     #: A dedicated profile lets a site run without contending for the shared
     #: profile's single-owner lock (e.g. alongside the Indeed scheduler).
     user_data_dir: Optional[str] = None
-    #: Optional per-site upstream proxy URL. None → the shared default. Set as an
-    #: instance attr before super().__init__() to pick a proxy dynamically.
+    #: Optional per-site upstream proxy URL. None → resolve from this site's
+    #: `<site>_use_proxy` toggle. Set as an instance attr before
+    #: super().__init__() to pick a proxy dynamically (Indeed probes for a
+    #: challenge-capable exit that way).
     proxy_url: Optional[str] = None
 
     def __init__(self):
-        self.browser = StealthBrowser(user_data_dir=self.user_data_dir, proxy_url=self.proxy_url)
+        # Resolve here rather than leaving it None: StealthBrowser reads None as
+        # "fall back to settings.proxy_url", which would proxy a site whose
+        # toggle is off. `proxy_for` returns "" for that case, which sticks.
+        resolved = self.proxy_url if self.proxy_url is not None else proxy_for(self.site)
+        self.browser = StealthBrowser(user_data_dir=self.user_data_dir, proxy_url=resolved)
         self.repo = JobRepository(table=self.table)
         #: Running write totals, updated by save() as each job is persisted.
         self.counts = {"inserted": 0, "updated": 0, "unchanged": 0, "unknown": 0, "skipped": 0, "too_old": 0}

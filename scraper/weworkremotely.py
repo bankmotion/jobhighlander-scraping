@@ -27,7 +27,7 @@ from typing import Optional
 
 from curl_cffi.requests import AsyncSession
 
-from config import settings
+from config import settings, proxy_for
 from logger import log
 from scraper.base_scraper import BaseScraper, ScrapedJob
 
@@ -146,8 +146,8 @@ class WeWorkRemotelyScraper(BaseScraper):
         super().__init__()  # sets up self.repo + counts (browser stays unused)
         self.listing_url = settings.weworkremotely_search_url
         self._proxies = None
-        if settings.proxy_url:
-            self._proxies = {"http": settings.proxy_url, "https": settings.proxy_url}
+        if proxy_for("weworkremotely"):
+            self._proxies = {"http": proxy_for("weworkremotely"), "https": proxy_for("weworkremotely")}
         self._cookies = {}  # filled in run() — may need an interactive sign-in
 
     # ── HTTP-only lifecycle (override the browser-based BaseScraper.run) ──────

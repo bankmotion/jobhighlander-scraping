@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from config import settings
+from config import settings, proxy_for
 from logger import log
 from scraper.base_scraper import BaseScraper, ScrapedJob
 from scraper.browser import clear_challenge
@@ -133,11 +133,11 @@ class JobicyScraper(BaseScraper):
 
             from patchright.async_api import async_playwright
             server = None
-            if settings.proxy_url:
+            if proxy_for("jobicy"):
                 # Chrome cannot send proxy credentials; front it with the relay.
                 from scraper.local_proxy import LocalRoutingProxy
                 direct = settings.proxy_bypass.split(",") if settings.proxy_bypass else []
-                relay = LocalRoutingProxy(settings.proxy_url, direct)
+                relay = LocalRoutingProxy(proxy_for("jobicy"), direct)
                 server = "http://127.0.0.1:%d" % await relay.start()
             profile = str(Path(settings.user_data_dir).parent / "jobicy-chrome")
             proc, endpoint = launch_chrome(profile, int(settings.jobicy_cdp_port), server)

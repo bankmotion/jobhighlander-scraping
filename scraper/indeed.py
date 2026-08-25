@@ -17,7 +17,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-from config import settings
+from config import settings, site_uses_proxy
 from logger import log
 from scraper import human
 from scraper.auth.google_auth import GoogleAuthService
@@ -251,7 +251,7 @@ class IndeedScraper(BaseScraper):
         # checkbox stays empty, and every page reads as "0 results". Probe for an
         # exit that reaches the shard before we launch, and remember it so the IP
         # (and the profile's cf_clearance) stays stable between runs.
-        base = settings.indeed_proxy_url or settings.proxy_url
+        base = (settings.indeed_proxy_url or settings.proxy_url) if site_uses_proxy("indeed") else ""
         if base:
             self.proxy_url = remembered_challenge_proxy(
                 base, settings.indeed_proxy_session_file, prefix="in"
@@ -278,7 +278,7 @@ class IndeedScraper(BaseScraper):
             await super().run()
             if not self.challenge_blocked:
                 return
-            base = settings.indeed_proxy_url or settings.proxy_url
+            base = (settings.indeed_proxy_url or settings.proxy_url) if site_uses_proxy("indeed") else ""
             if not base or attempt == self._MAX_PROXY_ROTATIONS:
                 log.error("[indeed] still blocked on the Cloudflare challenge after {} "
                           "exit-IP rotation(s) — giving up this cycle.", attempt)

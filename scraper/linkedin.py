@@ -37,7 +37,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 
 from curl_cffi.requests import AsyncSession
 
-from config import settings
+from config import settings, proxy_for
 from logger import log
 from scraper.base_scraper import BaseScraper, ScrapedJob
 
@@ -105,8 +105,8 @@ class LinkedInScraper(BaseScraper):
         self._role = (re.compile(settings.linkedin_role_regex, re.I)
                       if settings.linkedin_role_regex else None)
         self._proxies = None
-        if settings.proxy_url:
-            self._proxies = {"http": settings.proxy_url, "https": settings.proxy_url}
+        if proxy_for("linkedin"):
+            self._proxies = {"http": proxy_for("linkedin"), "https": proxy_for("linkedin")}
         self._detail_429 = 0        # consecutive 429s from the detail endpoint
         self._descriptions_off = False
 

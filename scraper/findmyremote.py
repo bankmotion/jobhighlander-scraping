@@ -31,7 +31,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 
 from curl_cffi.requests import AsyncSession
 
-from config import settings
+from config import settings, proxy_for
 from logger import log
 from scraper.base_scraper import BaseScraper, ScrapedJob
 
@@ -124,8 +124,8 @@ class FindMyRemoteScraper(BaseScraper):
         self._role = (re.compile(settings.findmyremote_role_regex, re.I)
                       if settings.findmyremote_role_regex else None)
         self._proxies = None
-        if settings.proxy_url:
-            self._proxies = {"http": settings.proxy_url, "https": settings.proxy_url}
+        if proxy_for("findmyremote"):
+            self._proxies = {"http": proxy_for("findmyremote"), "https": proxy_for("findmyremote")}
 
     # HTTP-only lifecycle (no browser).
     async def run(self) -> None:
