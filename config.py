@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     enable_findmyremote: bool = True
     enable_jobicy: bool = True
     enable_themuse: bool = True
+<<<<<<< HEAD
     # NOTE: there is no LinkedInScraper in `main.py`'s SCRAPERS registry in this
     # working copy, so this flag does not add LinkedIn to `main.py all` here —
     # `enabled_sites()` iterates the registry, not the flags. It exists because
@@ -59,6 +60,8 @@ class Settings(BaseSettings):
     # 'linkedin' rows since 2026-08-21) and the admin UI has to be able to
     # edit it. Whichever copy of the scraper is actually running LinkedIn reads
     # the same row.
+=======
+>>>>>>> f162c2afb649baeaf9b2b90114c34f57ae0043df
     enable_linkedin: bool = True
 
     # ── Indeed ──
@@ -114,6 +117,18 @@ class Settings(BaseSettings):
     findmyremote_search_url: str = (
         "https://findmyremote.ai/jobs?employmentType=fulltime&employmentType=parttime&location=us")
     findmyremote_role_regex: str = r"engineer|developer|software|programmer"  # "" = every role
+
+    # ── LinkedIn (public "guest" endpoints; no login, no browser) ──
+    #    Store the normal browsable search link — its filters (keywords, geoId,
+    #    f_TPR, …) are forwarded to the guest endpoint verbatim.
+    linkedin_search_url: str = (
+        "https://www.linkedin.com/jobs/remote-software-engineer-jobs"
+        "?keywords=Remote%20Software%20Engineer&location=United%20States"
+        "&geoId=103644278&f_TPR=r604800")
+    linkedin_role_regex: str = r"engineer|developer|software|programmer"  # "" = every role
+    #: Guest endpoints throttle to a 429 if hit hard, and a pass costs one detail
+    #: request per job, so pace it.
+    linkedin_delay_s: float = 1.5
 
     # ── Jobicy (real browser: the employer link only appears after clicking
     #    "Apply Now"). Cloudflare here rate-limits hard, hence the pacing knobs. ──
@@ -181,8 +196,12 @@ DB_MANAGED_KEYS: tuple = (
     "jobicy_delay_s",
     "enable_themuse", "themuse_search_url", "themuse_us_only", "themuse_role_regex",
     "themuse_delay_s",
+<<<<<<< HEAD
     "enable_linkedin", "linkedin_search_url", "linkedin_role_regex",
     "linkedin_delay_s",
+=======
+    "enable_linkedin", "linkedin_search_url", "linkedin_role_regex", "linkedin_delay_s",
+>>>>>>> f162c2afb649baeaf9b2b90114c34f57ae0043df
 )
 
 def _fmt(val) -> str:

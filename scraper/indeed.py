@@ -22,8 +22,8 @@ from logger import log
 from scraper import human
 from scraper.auth.google_auth import GoogleAuthService
 from scraper.base_scraper import BaseScraper, ScrapedJob
-from scraper.browser import is_challenged
-from scraper.local_proxy import remembered_challenge_proxy
+from scraper.browser import StealthBrowser, is_challenged
+from scraper.local_proxy import remembered_challenge_proxy, rotate_challenge_proxy
 from scraper.session import SessionStore
 
 GOOGLE_BUTTON = 'iframe[src*="accounts.google.com/gsi/button"]'
@@ -240,6 +240,9 @@ def compute_posted_at(posted_text, pub_ms):
 
 class IndeedScraper(BaseScraper):
     site = "indeed"
+    #: How many times a challenge-blocked exit IP is retired for a fresh one.
+    #: Each rotation costs a whole pass, so keep it small.
+    _MAX_PROXY_ROTATIONS = 2
 
     def __init__(self):
         # Indeed's results sit behind a Cloudflare Turnstile, and roughly half of
@@ -255,6 +258,40 @@ class IndeedScraper(BaseScraper):
             )
         super().__init__()
         self.google = GoogleAuthService()
+        #: Set by scrape() when a pass ends sitting behind the checkpoint, which
+        #: is the signal run() uses to retire the exit IP.
+        self.challenge_blocked = False
+
+    async def run(self) -> None:
+        """BaseScraper.run() plus exit-IP rotation.
+
+        The pre-flight in __init__ only proves the remembered exit can still
+        REACH Cloudflare's verification shard, not that Cloudflare still trusts
+        it. An exit that has been scored as a bot therefore stays pinned run
+        after run, and every pass reads as "0 results" while the pre-flight logs
+        [OK] — Indeed lost hours that way. So when a pass ends blocked on the
+        challenge rather than on the network, retire that exit and take the pass
+        again on a fresh one.
+        """
+        for attempt in range(self._MAX_PROXY_ROTATIONS + 1):
+            self.challenge_blocked = False
+            await super().run()
+            if not self.challenge_blocked:
+                return
+            base = settings.indeed_proxy_url or settings.proxy_url
+            if not base or attempt == self._MAX_PROXY_ROTATIONS:
+                log.error("[indeed] still blocked on the Cloudflare challenge after {} "
+                          "exit-IP rotation(s) — giving up this cycle.", attempt)
+                return
+            log.warning("[indeed] blocked on the Cloudflare challenge — retiring this exit IP "
+                        "and retrying ({}/{}).", attempt + 1, self._MAX_PROXY_ROTATIONS)
+            self.proxy_url = rotate_challenge_proxy(
+                base, settings.indeed_proxy_session_file, prefix="in"
+            )
+            # A fresh context: the old one holds a cf_clearance bound to the
+            # retired IP, which would just re-trigger the challenge.
+            self.browser = StealthBrowser(user_data_dir=self.user_data_dir,
+                                          proxy_url=self.proxy_url)
 
     def _job_url(self, jk: str) -> str:
         return f"https://www.indeed.com/viewjob?jk={jk}"
@@ -388,6 +425,7 @@ class IndeedScraper(BaseScraper):
             if not ok:
                 await self.browser.screenshot(f"screenshots/indeed_blocked_p{page_num + 1}.png")
                 log.error("Indeed page {} gated by a checkpoint we couldn't clear.", page_num + 1)
+                self.challenge_blocked = True
                 break
 
             # Behave like a human skimming the results.
@@ -406,6 +444,7 @@ class IndeedScraper(BaseScraper):
                         "Indeed page {} still behind a checkpoint (title={!r}) — stopping.",
                         page_num + 1, title,
                     )
+                    self.challenge_blocked = True
                     break
             # Indeed repeats sponsored cards under the same jk — dedupe across all
             # pages so max_jobs counts UNIQUE postings.
