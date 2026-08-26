@@ -33,6 +33,12 @@ INDEED_DOMAINS = ("indeed.com",)
 #: date-sorted walk. >1 so a single out-of-order card can't cut the run short.
 _STALE_RUN_TO_STOP = 3
 
+#: Pagination safety net. The walk normally ends on its own — no new unique
+#: cards, a stale-date streak, max_jobs, or a checkpoint — so this only bounds
+#: a pathological run. A code constant rather than an admin setting, matching
+#: LinkedIn's _MAX_PAGES.
+_MAX_PAGES = 10
+
 # Runs on a viewjob page: pull company, company link, job type, location, the
 # external apply link ("Apply on company site"), and the full description.
 _DETAIL_JS = r"""
@@ -418,7 +424,7 @@ class IndeedScraper(BaseScraper):
         date_sorted = "sort=date" in settings.indeed_search_url
         stop = False
         stale = 0  # consecutive organic postings older than max_age_days
-        for page_num in range(settings.indeed_max_pages):
+        for page_num in range(_MAX_PAGES):
             if stop or (settings.max_jobs and len(jobs) >= settings.max_jobs):
                 break
             ok = await self.browser.goto(self._page_url(settings.indeed_search_url, page_num))
@@ -456,7 +462,7 @@ class IndeedScraper(BaseScraper):
                     new_cards.append(item)
             log.info(
                 "Page {}/{}: {} cards, {} new unique",
-                page_num + 1, settings.indeed_max_pages, len(raw), len(new_cards),
+                page_num + 1, _MAX_PAGES, len(raw), len(new_cards),
             )
             if not new_cards:
                 if page_num == 0:

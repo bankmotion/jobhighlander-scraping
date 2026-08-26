@@ -87,7 +87,6 @@ class Settings(BaseSettings):
     # Global scrape limits (apply to every scraper). Prefer bounding by recency:
     max_jobs: int = 0  # 0 = no count cap (scrape all, bounded by max_age_days + pagination)
     max_age_days: int = 7  # only keep jobs posted within N days (0 = no age limit)
-    indeed_max_pages: int = 10  # paginate the results (&start=N); stops early if exhausted / too old
     fetch_descriptions: bool = True
     capture_apply_url: bool = True
 
@@ -181,7 +180,7 @@ DB_MANAGED_KEYS: tuple = (
     # Gap between scheduler cycles, re-read every cycle — see scheduler.py.
     "schedule_min_hours", "schedule_max_hours",
     "max_jobs", "max_age_days", "proxy_url", "fetch_descriptions",
-    "enable_indeed", "indeed_search_url", "indeed_max_pages",
+    "enable_indeed", "indeed_search_url",
     "enable_glassdoor", "glassdoor_search_url",
     "enable_jobright", "jobright_recommend_url", "jobright_recommend_api",
     "enable_weworkremotely", "weworkremotely_search_url",
