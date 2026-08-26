@@ -40,6 +40,7 @@ from curl_cffi.requests import AsyncSession
 from config import settings, proxy_for
 from logger import log
 from scraper.base_scraper import BaseScraper, ScrapedJob
+from scraper.dates import compute_posted_at, is_fine_grained
 
 _IMPERSONATE = "chrome"
 _GUEST = "https://www.linkedin.com/jobs-guest/jobs/api"
@@ -73,6 +74,11 @@ _COMPANY_URL_RE = re.compile(r'href="(https://www\.linkedin\.com/company/[^"?]+)
 _LOCATION_RE = re.compile(r'job-search-card__location[^"]*">\s*(.*?)\s*<', re.S)
 #: Fresh postings get the `--new` modifier on the same element, so match a prefix.
 _DATE_RE = re.compile(r'job-search-card__listdate[^"]*"\s+datetime="([\d-]+)"')
+#: The SAME <time> element carries the hour in its text:
+#:   <time class="…listdate--new" datetime="2026-08-25"> 19 hours ago </time>
+#: The attribute is date-only, so without this the posting is stored at
+#: midnight — backdating a 19-hour-old job by the better part of a day.
+_RELTIME_RE = re.compile(r'job-search-card__listdate[^"]*"[^>]*>\s*([^<]*?)\s*</time>', re.S)
 _DESC_RE = re.compile(r'show-more-less-html__markup[^>]*>(.*?)</div>', re.S)
 
 
@@ -87,6 +93,25 @@ def _clean_html(h: str) -> str:
     h = re.sub(r"[ \t]+\n", "\n", h)
     h = re.sub(r"\n{3,}", "\n\n", h)
     return h.strip()
+
+
+def _posted_at(attr_date: str, rel_text: str):
+    """Best posting timestamp from LinkedIn's <time> element.
+
+    The `datetime` attribute is the authoritative DATE but has no time-of-day;
+    the element text ("19 hours ago") is the only place the hour appears. Prefer
+    the text when it is minute/hour-grained, and fall back to the attribute for
+    anything coarser — for "3 days ago" the attribute names the real day, while
+    resolving the text against `now` would just smear today's clock time onto it.
+    """
+    if is_fine_grained(rel_text):
+        ts = compute_posted_at(rel_text, None)
+        if ts is not None:
+            return ts
+    try:
+        return datetime.strptime(attr_date, "%Y-%m-%d").date()
+    except ValueError:
+        return None
 
 
 def _text(pattern: re.Pattern, card: str) -> Optional[str]:
@@ -186,10 +211,8 @@ class LinkedInScraper(BaseScraper):
         posted = None
         d = _DATE_RE.search(card)
         if d:
-            try:
-                posted = datetime.strptime(d.group(1), "%Y-%m-%d").date()
-            except ValueError:
-                posted = None
+            rel = _RELTIME_RE.search(card)
+            posted = _posted_at(d.group(1), rel.group(1) if rel else "")
         co_url = _COMPANY_URL_RE.search(card)
         return {
             "id": job_id,

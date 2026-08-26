@@ -23,6 +23,7 @@ from scraper import human
 from scraper.auth.google_auth import GoogleAuthService
 from scraper.base_scraper import BaseScraper, ScrapedJob
 from scraper.browser import StealthBrowser, is_challenged
+from scraper.dates import compute_posted_at, is_fine_grained
 from scraper.local_proxy import remembered_challenge_proxy, rotate_challenge_proxy
 from scraper.session import SessionStore
 
@@ -215,33 +216,23 @@ _EXTRACT_JS = r"""
 """
 
 
-def compute_posted_at(posted_text, pub_ms):
-    """Full posting timestamp (naive UTC). Prefers Indeed's exact `pubDate` epoch
-    (ms); otherwise derives it from the relative text ("5 hours ago") against now."""
-    if pub_ms:
-        try:
-            return datetime.fromtimestamp(float(pub_ms) / 1000, tz=timezone.utc).replace(tzinfo=None)
-        except Exception:
-            pass
+def _posted_at(posted_text, pub_ms):
+    """Best posting timestamp for an Indeed card.
+
+    `pubDate` looks authoritative but is midnight US-Eastern of the posting DAY
+    (every stored row landed on exactly 05:00 UTC), so it is COARSER than the
+    card's own "5 hours ago" text. Prefer the text when it pins an hour.
+
+    The guard matters: the same card slot also yields "employer active 2 hours
+    ago" (see _EXTRACT_JS), which is when the employer last signed in, not when
+    the job was posted. Anything mentioning "active" falls through to `pubDate`.
+    """
     t = (posted_text or "").lower()
-    if not t:
-        return None
-    now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
-    if "just posted" in t or "moment" in t or "today" in t:
-        return now
-    m = re.search(r"(\d+)\s*minute", t)
-    if m:
-        return now - timedelta(minutes=int(m.group(1)))
-    m = re.search(r"(\d+)\s*hour", t)
-    if m:
-        return now - timedelta(hours=int(m.group(1)))
-    if "yesterday" in t:
-        return now - timedelta(days=1)
-    for unit, mult in (("day", 1), ("week", 7), ("month", 30), ("year", 365)):
-        m = re.search(rf"(\d+)\s*\+?\s*{unit}", t)
-        if m:
-            return now - timedelta(days=int(m.group(1)) * mult)
-    return None
+    if "active" not in t and is_fine_grained(t):
+        ts = compute_posted_at(t, None)
+        if ts is not None:
+            return ts
+    return compute_posted_at(posted_text, pub_ms)
 
 
 class IndeedScraper(BaseScraper):
@@ -477,7 +468,7 @@ class IndeedScraper(BaseScraper):
                 if jk in existing:
                     skipped += 1
                     continue
-                posted = compute_posted_at(item.get("posted"), item.get("pubDate"))
+                posted = _posted_at(item.get("posted"), item.get("pubDate"))
                 # Only ORGANIC postings say anything about how far down the date
                 # sort we've walked: promoted cards are injected at the top of
                 # every page regardless of age (the first one is routinely
