@@ -119,9 +119,15 @@ class HimalayasScraper(BaseScraper):
         return True
 
     @staticmethod
-    def _date(epoch):
+    def _posted_at(epoch):
+        """Posting time as naive UTC.
+
+        `pubDate` is an exact epoch and the age cutoff already compares it as
+        one; truncating to .date() here threw that precision away and stored
+        every posting at midnight, backdating it by up to 24h.
+        """
         try:
-            return datetime.fromtimestamp(int(epoch), tz=timezone.utc).date()
+            return datetime.fromtimestamp(int(epoch), tz=timezone.utc).replace(tzinfo=None)
         except Exception:
             return None
 
@@ -139,7 +145,7 @@ class HimalayasScraper(BaseScraper):
             description=_clean_html(jr.get("description") or jr.get("excerpt") or ""),
             link=link,
             location=", ".join(jr.get("locationRestrictions") or []) or None,
-            posted_at=self._date(jr.get("pubDate")),
+            posted_at=self._posted_at(jr.get("pubDate")),
             apply_url=link,  # Himalayas job page — its pages are CF-walled, so no external URL
             company=(jr.get("companyName") or "").strip() or None,
             company_url=(f"https://himalayas.app/companies/{company_slug}" if company_slug else None),
@@ -152,7 +158,9 @@ class HimalayasScraper(BaseScraper):
         return self.counts["inserted"] + self.counts["updated"] + self.counts["unchanged"]
 
     async def scrape(self) -> None:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=settings.max_age_days or 3650)).timestamp()
+        # Per-site window (the API has no date filter of its own).
+        max_age = settings.himalayas_max_age_days
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age or 3650)).timestamp()
         base = settings.himalayas_api_url
         async with AsyncSession(impersonate=_IMPERSONATE, proxies=self._proxies) as session:
             offset = 0

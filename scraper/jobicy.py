@@ -27,7 +27,7 @@ import asyncio
 import html as _html
 import random
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -87,6 +87,46 @@ def _clean(t: str) -> str:
     t = _html.unescape(t or "")
     t = re.sub(r"[ \t]+\n", "\n", t)
     return re.sub(r"\n{3,}", "\n\n", t).strip()
+
+
+#: Collects every JSON-LD block's text. Kept as a module constant in a RAW
+#: string so its escapes stay literal. Building this JS inline in an ordinary
+#: Python literal is a trap: an escaped newline separator becomes a REAL
+#: newline in the emitted JS, which is invalid inside a JS string literal.
+#: page.evaluate then raises, and the caller quietly falls back to the
+#: day-only parser — the failure looks like 'no timestamp found', not an error.
+_JSONLD_JS = r"""() => Array.from(
+    document.querySelectorAll('script[type="application/ld+json"]')
+).map(s => s.textContent).join(' ')"""
+
+
+async def _posted_from_jsonld(page):
+    """Exact posting time from the page's JSON-LD JobPosting block.
+
+    The rendered text only ever shows a day ("26 Aug 2026 Published") and the
+    <time> element's datetime attribute is date-only, so parsing either one
+    backdates the posting to midnight. The schema block carries the real
+    timestamp. Script text is not part of inner_text(), hence reading it off the
+    DOM — patchright's isolated world can read element text even though it
+    cannot see the page's JS globals.
+    """
+    try:
+        raw = await page.evaluate(_JSONLD_JS)
+    except Exception as e:
+        # Say so. Returning None silently makes a broken selector/script look
+        # identical to a page that simply carries no schema block.
+        log.warning("[jobicy] JSON-LD read failed ({}); falling back to the day-only date", e)
+        return None
+    m = re.search(r'"datePosted"\s*:\s*"([^"]+)"', raw or "")
+    if not m:
+        return None
+    try:
+        dt = datetime.fromisoformat(m.group(1).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 def _parse_posted(text: str) -> Optional[date]:
@@ -243,7 +283,8 @@ class JobicyScraper(BaseScraper):
         if self._role and not self._role.search(title):
             return None
 
-        posted = _parse_posted(body)
+        # Prefer the exact JSON-LD timestamp; the visible text is day-only.
+        posted = await _posted_from_jsonld(page) or _parse_posted(body)
         if self._too_old(posted):
             self.counts["too_old"] += 1
             log.info("[jobicy] skipped (posted {} — older than {}d) — {}",

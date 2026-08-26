@@ -121,12 +121,19 @@ class Settings(BaseSettings):
     himalayas_country: str = "United States"  # matches the API's locationRestrictions
     himalayas_role_regex: str = r"engineer|developer|software|programmer"
     himalayas_resolve_apply: bool = True  # 2nd pass: browser resolves real employer apply URLs
+    #: Recency window for THIS site only. The API exposes no date filter, so
+    #: the walk is bounded client-side against each posting's `pubDate` epoch.
+    himalayas_max_age_days: int = 1
 
     # ── FindMyRemote (public JSON API; apply URL is the employer's own ATS link) ──
     #    Store the normal browsable link — its query string is forwarded to the API.
     findmyremote_search_url: str = (
         "https://findmyremote.ai/jobs?employmentType=fulltime&employmentType=parttime&location=us")
     findmyremote_role_regex: str = r"engineer|developer|software|programmer"  # "" = every role
+    #: Recency window for THIS site only, overriding the global `max_age_days`.
+    #: The API is newest-first, so a tighter window also ends the walk sooner.
+    #: Same per-site escape hatch RemoteOK already uses.
+    findmyremote_max_age_days: int = 1
 
     # ── LinkedIn (public "guest" endpoints; no login, no browser) ──
     #    Store the normal browsable search link — its filters (keywords, geoId,
@@ -149,8 +156,10 @@ class Settings(BaseSettings):
         "&filter_job_type%5B%5D=part-time"
         "&filter_job_level%5B%5D=junior&filter_job_level%5B%5D=midweight"
         "&filter_job_level%5B%5D=senior"
-        "&filter_by_day_check=on&filter_by_day=7")
-    jobicy_role_regex: str = ""          # "" = keep every role the listing returns
+        "&filter_by_day_check=on&filter_by_day=1")
+    #: Jobicy's own industry filter still lets sales/marketing roles through, so
+    #: gate on the title like every other site does. "" = keep every role.
+    jobicy_role_regex: str = r"engineer|developer|software|programmer"
     jobicy_delay_s: float = 8.0          # pause between job pages — do NOT lower
     jobicy_cdp_port: int = 9224
 
@@ -163,6 +172,10 @@ class Settings(BaseSettings):
     themuse_us_only: bool = True   # drop postings whose hidden city is outside the US
     themuse_role_regex: str = ""      # "" = keep every role the listing returns
     themuse_delay_s: float = 6.0      # pause between job pages
+    #: Recency window for THIS site only. The Muse's URL filter has no 1-day
+    #: option (its finest is `date-posted/last_7d`), so the link stays at 7d and
+    #: the narrowing happens in code, per posting.
+    themuse_max_age_days: int = 1
     themuse_cdp_port: int = 9225      # own port so runs can't clash          # own port so it can't clash with other runs
 
     # ── Scheduler (random gap between runs, hours) ──
@@ -187,12 +200,15 @@ DB_MANAGED_KEYS: tuple = (
     "weworkremotely_max_per_company",
     "enable_remoteok", "remoteok_api_url",
     "enable_himalayas", "himalayas_api_url", "himalayas_country", "himalayas_role_regex",
+    "himalayas_max_age_days",
     "himalayas_resolve_apply",
     "enable_findmyremote", "findmyremote_search_url", "findmyremote_role_regex",
+    "findmyremote_max_age_days",
     
     "enable_jobicy", "jobicy_search_url", "jobicy_role_regex",
     "jobicy_delay_s",
     "enable_themuse", "themuse_search_url", "themuse_us_only", "themuse_role_regex",
+    "themuse_max_age_days",
     "themuse_delay_s",
     "enable_linkedin", "linkedin_search_url", "linkedin_role_regex", "linkedin_delay_s",
     # Per-site proxy routing (see `proxy_for`).

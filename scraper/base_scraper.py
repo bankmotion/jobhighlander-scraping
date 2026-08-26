@@ -6,7 +6,7 @@ New sites (the extra links you'll send later) subclass this and implement
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from config import settings, proxy_for
@@ -101,15 +101,24 @@ class BaseScraper:
         return result
 
     @staticmethod
-    def _too_old(posted) -> bool:
-        """True if `posted` is older than settings.max_age_days (0 = no age limit).
-        Jobs with an unknown date are kept (not skipped)."""
-        if not settings.max_age_days or posted is None:
+    def _too_old(posted, max_age_days: Optional[int] = None) -> bool:
+        """True if `posted` is older than the age window (0 = no age limit).
+        Jobs with an unknown date are kept (not skipped).
+
+        `max_age_days` lets a site pass its own window instead of the global one.
+
+        The cutoff is computed in UTC. Every scraper derives `posted` in UTC, so
+        a local `date.today()` here shifted the boundary by the host's offset —
+        harmless at 7 days, but a whole day's error on a 1-day window, and it
+        differed between the UTC+3 server and a UTC-7 dev box.
+        """
+        limit = settings.max_age_days if max_age_days is None else max_age_days
+        if not limit or posted is None:
             return False
         if isinstance(posted, datetime):
             posted = posted.date()
         try:
-            return posted < (date.today() - timedelta(days=settings.max_age_days))
+            return posted < (datetime.now(timezone.utc).date() - timedelta(days=limit))
         except TypeError:
             return False
 

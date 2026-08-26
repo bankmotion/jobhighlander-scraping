@@ -23,7 +23,7 @@ import asyncio
 import html as _html
 import random
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse, urlsplit, urlunsplit
@@ -139,6 +139,10 @@ _EMPLOYMENT = {
 }
 
 
+#: `Posted:` on the detail page is a full ISO stamp; the time part is optional.
+_POSTED_RE = r"Posted:\s*(\d{4}-\d{2}-\d{2}(?:T[\d:]+)?)"
+
+
 def _detail_fields(body: str) -> dict:
     """Pull the structured block The Muse prints above the apply button.
 
@@ -157,10 +161,19 @@ def _detail_fields(body: str) -> dict:
     if types:
         val = types[-1].strip()
         out["job_type"] = _EMPLOYMENT.get(val, val.title())
-    m = re.search(r"Posted:\s*(\d{4}-\d{2}-\d{2})(?:T[\d:]+)?", body)
+    # Capture the whole ISO stamp: the old pattern matched the time but threw
+    # it away in a non-capturing group, backdating every posting to midnight.
+    m = re.search(_POSTED_RE, body)
     if m:
+        raw = m.group(1)
         try:
-            out["posted"] = datetime.strptime(m.group(1), "%Y-%m-%d").date()
+            if "T" in raw:
+                dt = datetime.fromisoformat(raw)
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                out["posted"] = dt
+            else:
+                out["posted"] = datetime.strptime(raw, "%Y-%m-%d").date()
         except ValueError:
             pass
     return out
@@ -213,16 +226,17 @@ def _relative_posted(text: str) -> Optional[date]:
     "Yesterday", "2 days ago". It never says "Posted", which the first version
     required, so every date came back null."""
     t = (text or "").lower()
+    today = datetime.now(timezone.utc).date()   # UTC, matching _too_old
     if re.search(r"\b(just now|today)\b", t):
-        return date.today()
+        return today
     if re.search(r"\byesterday\b", t):
-        return date.today() - timedelta(days=1)
+        return today - timedelta(days=1)
     m = re.search(r"\b(\d{1,2})\s*(minute|hour|day|week|month)s?\s+ago\b", t)
     if not m:
         return None
     n, unit = int(m.group(1)), m.group(2)
     days = {"minute": 0, "hour": 0, "day": n, "week": n * 7, "month": n * 30}[unit]
-    return date.today() - timedelta(days=days)
+    return today - timedelta(days=days)
 
 
 class TheMuseScraper(BaseScraper):
@@ -476,10 +490,15 @@ class TheMuseScraper(BaseScraper):
             return None
 
         posted = fields.get("posted") or _relative_posted(body)
-        if self._too_old(posted):
+        # The Muse's own URL filter bottoms out at last_7d, so the 1-day
+        # narrowing happens here, per posting. Its ordering is a relevance
+        # blend rather than a date sort, so we cannot early-stop — every
+        # page has to be checked.
+        max_age = settings.themuse_max_age_days
+        if self._too_old(posted, max_age):
             self.counts["too_old"] += 1
             log.info("[themuse] skipped (posted {} — older than {}d) — {}",
-                     posted, settings.max_age_days, title[:44])
+                     posted, max_age, title[:44])
             return None
 
         apply_url = await self._employer_url(ctx, page)

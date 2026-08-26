@@ -113,6 +113,15 @@ def _employment(types) -> Optional[str]:
     return ", ".join(dict.fromkeys(names)) or None
 
 
+def _naive_utc(dt):
+    """Tz-aware datetime -> naive UTC, the convention the `jobs` table stores."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
 class FindMyRemoteScraper(BaseScraper):
     site = "findmyremote"
     #: Live table — the API hands us the employer's own apply URL directly, so
@@ -193,7 +202,10 @@ class FindMyRemoteScraper(BaseScraper):
             description=description,
             link=f"{_BASE}/companies/{co_slug}/jobs/{job.get('slug')}" if co_slug else apply_url,
             location=", ".join(str(c).upper() for c in countries) or None,
-            posted_at=posted.date() if posted else None,
+            # Keep the TIME, not just the day: the API's `createdAt` is exact, and
+            # truncating to midnight backdates a job by up to 24h — which a 1-day
+            # window cannot absorb. Naive UTC, matching what `jobs` stores.
+            posted_at=_naive_utc(posted),
             apply_url=apply_url,  # the EMPLOYER's own ATS link, straight from the API
             company=(company.get("name") or "").strip() or None,
             company_url=(f"{_BASE}/companies/{co_slug}" if co_slug else None),
@@ -203,7 +215,9 @@ class FindMyRemoteScraper(BaseScraper):
         )
 
     async def scrape(self) -> None:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=settings.max_age_days or 3650)
+        # Per-site window (see config); 0 falls back to no limit.
+        max_age = settings.findmyremote_max_age_days
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age or 3650)
         query = self._api_query()
         log.info("[findmyremote] filters: {}", query or "(none)")
         cursor: Optional[int] = None
@@ -241,7 +255,7 @@ class FindMyRemoteScraper(BaseScraper):
                         self.save(job)
                 if stop:
                     log.info("[findmyremote] reached postings older than {}d — stopping.",
-                             settings.max_age_days)
+                             max_age)
                     break
                 if len(jobs) < _PAGE_SIZE:
                     break
