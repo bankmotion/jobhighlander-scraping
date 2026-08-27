@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from config import settings, proxy_for
+from config import settings, proxy_for, is_blocked_company
 from logger import log
 from scraper.browser import StealthBrowser
 from scraper.db import JobRepository
@@ -73,6 +73,14 @@ class BaseScraper:
         if not (job.apply_url and job.apply_url.strip()):
             self.counts["skipped"] += 1
             log.info("[{}] skipped (no apply url) — {} ({})", self.site, (job.title or "")[:50], job.site_job_id)
+            return "skipped"
+        # Recruiting middlemen relist other companies' roles under their own
+        # name; the posting is an agency ad, not an employer opening. Checked
+        # here so it applies to every site rather than one scraper at a time.
+        if is_blocked_company(job.company):
+            self.counts["skipped"] += 1
+            log.info("[{}] skipped (blocked company {!r}) — {}",
+                     self.site, job.company, (job.title or "")[:50])
             return "skipped"
         if self._too_old(job.posted_at):
             self.counts["too_old"] += 1

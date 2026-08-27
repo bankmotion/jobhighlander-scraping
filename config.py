@@ -87,6 +87,14 @@ class Settings(BaseSettings):
     # Global scrape limits (apply to every scraper). Prefer bounding by recency:
     max_jobs: int = 0  # 0 = no count cap (scrape all, bounded by max_age_days + pagination)
     max_age_days: int = 7  # only keep jobs posted within N days (0 = no age limit)
+    #: Companies to never store, comma-separated, matched on the WHOLE name
+    #: (case-insensitive, trimmed) — not as a substring. Recruiting middlemen
+    #: like Ladders relist other companies' roles under their own name, so the
+    #: posting is an agency ad rather than an employer's opening.
+    #:
+    #: Exact matching is deliberate: "Ladders" the agency must not take out
+    #: "Ladder" the employer, which is a real company posting real jobs.
+    company_blocklist: str = "Ladders,TheLadders"
     fetch_descriptions: bool = True
     capture_apply_url: bool = True
 
@@ -193,6 +201,7 @@ DB_MANAGED_KEYS: tuple = (
     # Gap between scheduler cycles, re-read every cycle — see scheduler.py.
     "schedule_min_hours", "schedule_max_hours",
     "max_jobs", "max_age_days", "proxy_url", "fetch_descriptions",
+    "company_blocklist",
     "enable_indeed", "indeed_search_url",
     "enable_glassdoor", "glassdoor_search_url",
     "enable_jobright", "jobright_recommend_url", "jobright_recommend_api",
@@ -243,6 +252,18 @@ def proxy_for(site: str) -> str:
     if not site_uses_proxy(site):
         return ""
     return settings.proxy_url or ""
+
+
+def blocked_companies() -> set:
+    """Normalised blocklist from `company_blocklist`. Empty entries dropped."""
+    raw = settings.company_blocklist or ""
+    return {c.strip().casefold() for c in raw.split(",") if c.strip()}
+
+
+def is_blocked_company(name) -> bool:
+    """True if `name` is on the blocklist (whole-name, case-insensitive)."""
+    return bool(name) and str(name).strip().casefold() in blocked_companies()
+
 
 def _fmt(val) -> str:
     if isinstance(val, bool):
