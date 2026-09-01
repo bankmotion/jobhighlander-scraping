@@ -50,11 +50,21 @@ def _fingerprint(
     site: str,
     company: Optional[str],
     title: str,
-    location: Optional[str],
     description: str,
 ) -> str:
-    """Content identity: site + company + title + location + the first 100
-    normalised characters of the description.
+    """Content identity: site + company + title + the first 100 normalised
+    characters of the description.
+
+    LOCATION IS DELIBERATELY EXCLUDED. It used to be part of the key, on the
+    reasoning that the same title at the same company in two cities is two jobs.
+    Measured against real data that is wrong far more often than it is right:
+    one requisition is broadcast to every metro, and the key then admitted one
+    row per city — Pearson's "Senior Software Engineer" arrived 51 times, once
+    per state capital, and Harris Computer 48 times, once per US state. 8.8% of
+    the table was the same handful of postings repeated.
+
+    The cost is real but smaller: an employer genuinely staffing the same role
+    in several offices now collapses to one row.
 
     Company is included even though the description prefix usually names it:
     without it, "Software Engineer (Full Stack)" in Lehi, UT collapsed two
@@ -71,7 +81,6 @@ def _fingerprint(
         site,
         _norm(company),
         _norm(title),
-        _norm(location),
         _norm(description)[:100],
     ]
     return hashlib.sha1(_SEP.join(parts).encode("utf-8")).hexdigest()
@@ -211,7 +220,7 @@ class JobRepository:
         job_type = _clamp("job_type", job_type)
         location = _clamp("location", location)
         salary = _clamp("salary", salary)
-        fingerprint = _fingerprint(site, company, title, location, description)
+        fingerprint = _fingerprint(site, company, title, description)
         with self._conn.cursor() as cur:
             cur.execute(
                 _UPSERT_SQL.format(table=self.table),
