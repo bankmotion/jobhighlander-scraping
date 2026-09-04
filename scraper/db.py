@@ -187,6 +187,24 @@ class JobRepository:
             cur.execute(f"SELECT site_job_id FROM {self.table} WHERE site = %s", (site,))
             return {row[0] for row in cur.fetchall()}
 
+    def keys_with_descriptions(self, site: str) -> set:
+        """site_job_ids already stored for `site` WITH a non-empty description.
+
+        Stricter than `existing_keys` on purpose. A scraper that skips every id
+        it has seen would also skip rows whose description failed to load, and
+        those would stay empty for good; keying on "already has the expensive
+        part" makes a failed fetch retry on the next run instead.
+        """
+        if self._conn is None:
+            self.connect()
+        assert self._conn is not None
+        with self._conn.cursor() as cur:
+            cur.execute(
+                f"SELECT site_job_id FROM {self.table} "
+                "WHERE site = %s AND description IS NOT NULL AND description <> ''",
+                (site,))
+            return {row[0] for row in cur.fetchall()}
+
     def upsert_job(
         self,
         *,

@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     enable_jobicy: bool = True
     enable_themuse: bool = True
     enable_linkedin: bool = True
+    enable_dice: bool = True
+    enable_ziprecruiter: bool = True
 
     # ── Per-site proxy routing ──
     # Whether each site's traffic goes through `proxy_url` (the shared IPRoyal
@@ -74,6 +76,13 @@ class Settings(BaseSettings):
     jobicy_use_proxy: bool = True
     themuse_use_proxy: bool = True
     linkedin_use_proxy: bool = True
+    #: Dice is reachable straight from the server and its data is public,
+    #: so it pays the residential proxy's latency for nothing.
+    dice_use_proxy: bool = False
+    #: ZipRecruiter is the one site where this is NOT a preference. From the
+    #: server's own (Finnish) IP it geo-redirects to ziprecruiter.ie and there
+    #: are no US listings to read; the proxy is what makes the visitor American.
+    ziprecruiter_use_proxy: bool = True
 
     # ── Indeed ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
@@ -143,6 +152,42 @@ class Settings(BaseSettings):
     himalayas_resolve_max_age_days: int = 2
     himalayas_resolve_limit: int = 150      # hard cap on rows per pass
     himalayas_resolve_budget_min: int = 25  # wall-clock ceiling for the pass
+
+    # ── Dice (search + detail over HTTP; a browser only for the Google sign-in) ──
+    #: A normal browsable dice.com search link. Paging is applied by the scraper,
+    #: so any `page`/`selectedJobId` left in a pasted URL is stripped.
+    dice_search_url: str = (
+        "https://www.dice.com/jobs?filters.postedDate=ONE"
+        "&filters.employmentType=FULLTIME%7CPARTTIME&filters.workplaceTypes=Remote"
+        "&location=United+States&q=senior+software+engineer"
+        "&latitude=38.7945952&longitude=-106.5348379&countryCode=US"
+        "&locationPrecision=Country")
+    dice_role_regex: str = r"engineer|developer|software|programmer"  # "" = every role
+    #: Recency window for THIS site only. The search URL already filters to one
+    #: day (`filters.postedDate=ONE`); this is the backstop that keeps a widened
+    #: filter from quietly importing a week of postings.
+    dice_max_age_days: int = 1
+    dice_delay_s: float = 1.0
+
+    # ── ZipRecruiter (browser-only: Cloudflare, and a US exit is mandatory) ──
+    #: A normal browsable ziprecruiter.com search link. Paging and the selected
+    #: card are driven by the scraper, so `page`/`lk` in a pasted URL are stripped.
+    ziprecruiter_search_url: str = (
+        "https://www.ziprecruiter.com/jobs-search?search=software+engineer"
+        "&location=United+States&location_explicitly_set=true&radius=25&days=1"
+        "&refine_by_employment=&refine_by_location_type=only_remote"
+        "&refine_by_salary=&refine_by_salary_ceil=&refine_by_apply_type="
+        "&refine_by_experience_level=&location_types_explicitly_set=true")
+    ziprecruiter_role_regex: str = r"engineer|developer|software|programmer"  # "" = every role
+    #: Recency window for THIS site only, backing up the search URL's `days=`.
+    ziprecruiter_max_age_days: int = 1
+    ziprecruiter_delay_s: float = 1.0
+    #: Wall-clock ceiling. Each posting costs a navigation plus (usually) a
+    #: redirect tab, so the pass length tracks the result count — which a
+    #: widened filter can multiply without warning.
+    ziprecruiter_budget_min: int = 30
+    ziprecruiter_session_file: str = str(BASE_DIR / "sessions" / "ziprecruiter_session.json")
+    ziprecruiter_user_data_dir: str = str(BASE_DIR / "sessions" / "ziprecruiter-chrome-profile")
 
     # ── FindMyRemote (public JSON API; apply URL is the employer's own ATS link) ──
     #    Store the normal browsable link — its query string is forwarded to the API.
@@ -233,11 +278,15 @@ DB_MANAGED_KEYS: tuple = (
     "themuse_max_age_days",
     "themuse_delay_s",
     "enable_linkedin", "linkedin_search_url", "linkedin_role_regex", "linkedin_delay_s",
+    "enable_dice", "dice_search_url", "dice_role_regex", "dice_max_age_days",
+    "dice_delay_s",
+    "enable_ziprecruiter", "ziprecruiter_search_url", "ziprecruiter_role_regex",
+    "ziprecruiter_max_age_days", "ziprecruiter_delay_s", "ziprecruiter_budget_min",
     # Per-site proxy routing (see `proxy_for`).
     "indeed_use_proxy", "glassdoor_use_proxy", "jobright_use_proxy",
     "weworkremotely_use_proxy", "remoteok_use_proxy", "himalayas_use_proxy",
     "findmyremote_use_proxy", "jobicy_use_proxy", "themuse_use_proxy",
-    "linkedin_use_proxy",
+    "linkedin_use_proxy", "dice_use_proxy", "ziprecruiter_use_proxy",
 )
 
 

@@ -17,6 +17,7 @@ import traceback
 from config import settings, sync_settings_from_db
 from logger import log
 from scraper.db import ScrapeRunRepo
+from scraper.dice import DiceScraper
 from scraper.findmyremote import FindMyRemoteScraper
 from scraper.glassdoor import GlassdoorScraper
 from scraper.indeed import IndeedScraper
@@ -27,6 +28,7 @@ from scraper.linkedin import LinkedInScraper
 from scraper.remoteok import RemoteOkScraper
 from scraper.themuse import TheMuseScraper
 from scraper.weworkremotely import WeWorkRemotelyScraper
+from scraper.ziprecruiter import ZipRecruiterScraper
 
 SCRAPERS = {
     "indeed": IndeedScraper,
@@ -39,6 +41,8 @@ SCRAPERS = {
     "jobicy": JobicyScraper,
     "themuse": TheMuseScraper,
     "linkedin": LinkedInScraper,
+    "dice": DiceScraper,
+    "ziprecruiter": ZipRecruiterScraper,
     # Add more sites here as their links arrive — each reuses the same core.
 }
 
@@ -56,6 +60,8 @@ def enabled_sites() -> list[str]:
         "jobicy": settings.enable_jobicy,
         "themuse": settings.enable_themuse,
         "linkedin": settings.enable_linkedin,
+        "dice": settings.enable_dice,
+        "ziprecruiter": settings.enable_ziprecruiter,
     }
     return [s for s in SCRAPERS if flags.get(s, True)]
 

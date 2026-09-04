@@ -9,6 +9,8 @@ space that can be deleted at any time).
 Sites handled:
   • himalayas      — needed for the employer apply URL (logged out, "Apply now"
                      is just /signup/talent).
+  • dice           — the Apply button is login-gated in the UI, and signing in
+                     is the journey a real visitor takes.
   • weworkremotely — unlocks account-gated apply buttons (Toptal et al.). NOTE the
                      big-name postings sit behind WWR's PAID plan
                      (/job-seekers/onboarding/step_3?context=paywall), which no
@@ -52,6 +54,18 @@ SITES = {
         "probe": "https://himalayas.app/",
         "logged_out": r"/(login|signup)\b",
         "domain": "himalayas.app",
+    },
+    "dice": {
+        "login": "https://www.dice.com/dashboard/login",
+        "oauth": None,  # a "Continue with Google" button, not a direct endpoint
+        "probe": "https://www.dice.com/dashboard/jobs",
+        # Dice keeps a "Login" link in the header of EVERY page, signed in or
+        # not, so the anchor scan the other sites use always reads logged-out
+        # here. Where the probe lands is the honest signal: signed in,
+        # /dashboard/jobs resolves to /my-jobs; signed out it bounces to
+        # /dashboard/login.
+        "logged_out_url": r"/dashboard/login",
+        "domain": "dice.com",
     },
     "weworkremotely": {
         "login": "https://weworkremotely.com/job-seekers/account/login",
@@ -179,11 +193,21 @@ def launch_chrome(profile: str, port: int, proxy_server: Optional[str] = None):
 
 
 async def is_signed_in(page, site: str) -> bool:
+    """Whether `probe` renders as a signed-in page.
+
+    Two ways to tell, per site. `logged_out_url` compares where the probe
+    ACTUALLY LANDED, for sites that bounce an anonymous visitor to their login
+    page; `logged_out` scans the anchors for a sign-in link. The URL test comes
+    first because it is the stronger signal — a site that keeps a "Login" link in
+    its header for signed-in users too (Dice) defeats the anchor scan entirely.
+    """
     cfg = SITES[site]
     try:
         await page.goto(cfg["probe"], wait_until="domcontentloaded", timeout=45000)
         await clear_challenge(page, max_wait_s=90)
         await asyncio.sleep(2.5)
+        if cfg.get("logged_out_url"):
+            return not re.search(cfg["logged_out_url"], page.url or "")
         hrefs = await page.eval_on_selector_all("a", "els => els.map(e => e.getAttribute('href') || '')")
         return not any(re.search(cfg["logged_out"], h or "") for h in hrefs)
     except Exception:
