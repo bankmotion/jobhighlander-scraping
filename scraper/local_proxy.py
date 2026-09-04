@@ -25,18 +25,33 @@ from urllib.parse import urlparse
 
 from logger import log
 
-# Cloudflare serves the Turnstile verification backend from a regional shard
-# (e.g. brunhild.challenges.cloudflare.com). Some residential exit IPs 504 when
-# tunnelling to it, which silently breaks the challenge → a hard "Humans only"
-# block. We probe for an exit that can actually reach it before scraping.
-CHALLENGE_PROBE_HOST = "brunhild.challenges.cloudflare.com"
+# Host used to pre-flight an exit IP's ability to reach Cloudflare's challenge
+# infrastructure before we spend a run on it.
+#
+# This WAS "brunhild.challenges.cloudflare.com", a regional Turnstile shard. That
+# name has no A record — public DNS answers NOERROR with no address, from any
+# resolver and any exit — so the probe could never pass. Every run logged eight
+# "cannot reach" lines, fell back to the base session anyway, and (worse) the
+# rotation path treated perfectly good exits as burned. Probe the widget host
+# instead: it resolves, it is what the challenge actually loads, and a proxy that
+# cannot tunnel to it genuinely cannot solve a Turnstile.
+CHALLENGE_PROBE_HOST = "challenges.cloudflare.com"
 
 #: Fresh sticky sessions to try when retiring a challenge-blocked exit IP.
 _ROTATE_ATTEMPTS = 8
 
 
 def with_session(proxy_url: str, session: str) -> str:
-    """Swap the IPRoyal sticky-session token in a proxy URL (→ a different IP)."""
+    """Swap the sticky-session token in a proxy URL (→ a different exit IP).
+
+    IPRoyal carries it as `session-<token>` inside the password. Providers that
+    use a different convention (DataImpulse puts it in the USERNAME, as
+    `user__sid.<n>`) have no such token, and this returns the URL unchanged —
+    callers then retry the same exit rather than a new one, so treat a no-op
+    return as "rotation is not available here" rather than as a fresh IP.
+    """
+    if "session-" not in (proxy_url or ""):
+        return proxy_url
     return re.sub(r"session-[^_@:/]+", f"session-{session}", proxy_url)
 
 

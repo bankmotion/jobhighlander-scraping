@@ -22,6 +22,7 @@ Cloudflare challenge.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -59,6 +60,17 @@ _CHALLENGE_TEXT_HINTS = (
 #: `width / 9` (≈33px on a 300px widget) landed just PAST the checkbox's right
 #: edge and silently did nothing.
 _TURNSTILE_CLICK_DX = (18, 24, 12)
+
+#: Cloudflare's TERMINAL block page, as opposed to a solvable challenge. It
+#: still embeds a challenges.cloudflare.com iframe, so `is_challenged` sees it
+#: as an ordinary checkpoint and we would sit clicking at it until the timeout —
+#: 120s per page, every page, for a verdict that was already final. The Ray ID
+#: plus "Return home"/"Troubleshooting Cloudflare Errors" is the giveaway: there
+#: is no checkbox behind it, only an error page.
+_HARD_BLOCK_RE = re.compile(
+    r"(additional verification required|sorry, you have been blocked|"
+    r"attention required)", re.I)
+_RAY_ID_RE = re.compile(r"ray id", re.I)
 
 
 # ── Cloudflare / checkpoint handling (page-scoped so standalone tools in
@@ -109,6 +121,20 @@ async def is_challenged(page) -> tuple[bool, str, Optional[dict]]:
     except Exception:
         pass
     return False, title, None
+
+
+async def is_hard_blocked(page) -> bool:
+    """True if the page is Cloudflare's final block rather than a challenge.
+
+    Requires BOTH the block wording and a Ray ID, because "attention required"
+    alone shows up on ordinary interactive challenges too and bailing on those
+    would throw away pages we can actually get through.
+    """
+    try:
+        body = ((await page.inner_text("body")) or "")[:4000]
+    except Exception:
+        return False
+    return bool(_HARD_BLOCK_RE.search(body) and _RAY_ID_RE.search(body))
 
 
 async def is_settled(page, title: str) -> bool:
@@ -183,6 +209,16 @@ async def clear_challenge(
             continue
         clean_reads = 0
         saw_challenge = saw_challenge or challenged
+
+        # Give an interactive challenge its grace period first — the block page
+        # and a fresh challenge look alike for the first second or two — then
+        # stop rather than spend the remaining budget on an error page.
+        if elapsed >= grace_s and await is_hard_blocked(page):
+            log.warning(
+                "Cloudflare returned its BLOCK page (not a solvable challenge) after ~{}s — "
+                "giving up on this page. Retrying will not help; the exit IP or the "
+                "browser fingerprint has been refused.", elapsed)
+            return False
 
         if (
             bbox
