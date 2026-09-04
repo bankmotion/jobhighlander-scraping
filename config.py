@@ -132,6 +132,17 @@ class Settings(BaseSettings):
     #: Recency window for THIS site only. The API exposes no date filter, so
     #: the walk is bounded client-side against each posting's `pubDate` epoch.
     himalayas_max_age_days: int = 1
+    #: Bounds on the apply-URL pass. It is a browser pass — ~8s for a row that
+    #: resolves, longer for one that doesn't — so its queue has to stay bounded.
+    #: Unbounded, it only grew: a row that CAN'T resolve (login-gated, posting
+    #: pulled, employer applies on Himalayas itself) stays pending and came back
+    #: on every run forever. The queue went 73 -> 584 rows in a week, of which
+    #: 424 were stale, and the pass went from ~15 min to hours. Inside the age
+    #: window a row is still retried once per run, so transient failures get
+    #: plenty of chances before it ages out.
+    himalayas_resolve_max_age_days: int = 2
+    himalayas_resolve_limit: int = 150      # hard cap on rows per pass
+    himalayas_resolve_budget_min: int = 25  # wall-clock ceiling for the pass
 
     # ── FindMyRemote (public JSON API; apply URL is the employer's own ATS link) ──
     #    Store the normal browsable link — its query string is forwarded to the API.
@@ -211,6 +222,8 @@ DB_MANAGED_KEYS: tuple = (
     "enable_himalayas", "himalayas_api_url", "himalayas_country", "himalayas_role_regex",
     "himalayas_max_age_days",
     "himalayas_resolve_apply",
+    "himalayas_resolve_max_age_days", "himalayas_resolve_limit",
+    "himalayas_resolve_budget_min",
     "enable_findmyremote", "findmyremote_search_url", "findmyremote_role_regex",
     "findmyremote_max_age_days",
     

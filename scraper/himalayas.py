@@ -38,6 +38,11 @@ from scraper.browser import clear_challenge
 
 _IMPERSONATE = "chrome"
 _MAX_PAGES = 40
+#: Rows to walk with ZERO resolutions before calling the apply pass broken
+#: rather than unlucky. Only consulted while nothing at all has resolved, so it
+#: catches the systemic failure (session gone, markup changed, account capped)
+#: without cutting short a pass that is simply having a lean stretch.
+_MAX_CONSECUTIVE_MISSES = 25
 
 
 def _clean_html(h: str) -> str:
@@ -250,12 +255,27 @@ def _off_himalayas(url: str) -> bool:
 
 
 def _pending_rows(limit: int = 0) -> list:
-    """Rows whose apply_url is still the Himalayas page.
+    """Rows whose apply_url is still the Himalayas page, newest first.
 
     Prefix match, NOT '%himalayas.app%' — a RESOLVED row's employer URL still
     carries `utm_source=himalayas.app`, so a substring match would drag every
     already-finished job back into the queue.
+
+    BOUNDED BY POSTING AGE, and that bound is the point. Resolution is
+    best-effort: plenty of rows can never resolve (the posting applies on
+    Himalayas itself, it was pulled, the session lapsed while it was queued).
+    Those stayed pending forever, so every run re-walked every past failure on
+    top of the day's new rows — the queue grew 73 -> 212 -> 584, and a pass that
+    took ~15 minutes was still going hours later. Nothing about it self-corrected.
+
+    An age window fixes that without bookkeeping: a row is retried once per run
+    for as long as it's inside the window (many attempts, so a transient
+    Cloudflare or session blip still gets caught), and then it's let go. Scraping
+    only ingests postings from the last `himalayas_max_age_days` days anyway, so
+    a wider resolution window than that is already generous.
     """
+    days = max(1, settings.himalayas_resolve_max_age_days)
+    limit = limit or max(1, settings.himalayas_resolve_limit)
     import pymysql
     conn = pymysql.connect(
         host=settings.db_host, port=settings.db_port, user=settings.db_user,
@@ -267,8 +287,11 @@ def _pending_rows(limit: int = 0) -> list:
                 "SELECT id, apply_url FROM jobs "
                 "WHERE site='himalayas' AND (apply_url LIKE 'https://himalayas.app/%%' "
                 "                            OR apply_url IS NULL OR apply_url = '') "
-                "ORDER BY id DESC" + (" LIMIT %s" if limit else ""),
-                ((limit,) if limit else ()))
+                # COALESCE: posted_at is always set today, but a row that ever
+                # lands without one must not become permanently unqueueable.
+                "  AND COALESCE(posted_at, created_at) >= UTC_TIMESTAMP() - INTERVAL %s DAY "
+                "ORDER BY id DESC LIMIT %s",
+                (days, limit))
             return [{"id": r[0], "url": r[1]} for r in cur.fetchall()]
     finally:
         conn.close()
@@ -294,18 +317,24 @@ def _write_apply_urls(rows: list) -> int:
     return n
 
 
-async def _settle(page, tries: int = 6) -> None:
+async def _settle(page, timeout_s: float = 9.0, step_s: float = 0.5) -> None:
     """Wait for the REAL job page to render. Can't just count <h1>s — Cloudflare's
-    interstitial has one too ("himalayas.app")."""
-    for _ in range(tries):
-        await asyncio.sleep(1.5)
+    interstitial has one too ("himalayas.app").
+
+    Polled finely rather than in 1.5s blocks: the h1 is usually there on the first
+    look, and this runs once per queued row, so the rounding was pure wall-clock.
+    """
+    waited = 0.0
+    while waited < timeout_s:
         try:
             texts = await page.eval_on_selector_all(
                 "h1", "els => els.map(e => (e.textContent || '').trim())")
+            if any(t and t.lower() not in ("himalayas.app", "himalayas") for t in texts):
+                return
         except Exception:
-            continue
-        if any(t and t.lower() not in ("himalayas.app", "himalayas") for t in texts):
-            return
+            pass
+        await asyncio.sleep(step_s)
+        waited += step_s
 
 
 async def _follow_apply_redirect(ctx, apply_url: str) -> Optional[str]:
@@ -314,10 +343,13 @@ async def _follow_apply_redirect(ctx, apply_url: str) -> Optional[str]:
     tab = await ctx.new_page()
     try:
         await tab.goto(apply_url, wait_until="domcontentloaded", timeout=45000)
-        for _ in range(8):  # the hop takes a moment to settle
-            await asyncio.sleep(1.5)
-            if _off_himalayas(tab.url):
-                break
+        waited = 0.0
+        # Checked before the first sleep: the 302 has usually already been
+        # followed by the time goto() returns, and the old 1.5s-first ordering
+        # charged every single resolved row for a hop that was already done.
+        while not _off_himalayas(tab.url) and waited < 12.0:
+            await asyncio.sleep(0.3)
+            waited += 0.3
         return tab.url if _is_employer_url(tab.url) else None
     except Exception:
         return None
@@ -341,34 +373,50 @@ async def _apply_via_modal(page, ctx) -> Optional[str]:
                 return hit ? hit.href : '';
             }""")
 
+    async def _wait_href(timeout_s: float, step_s: float = 0.25) -> str:
+        """Poll for the modal's link. Fine-grained on purpose — the modal mounts
+        in well under a second when it mounts at all, so coarse sleeps just added
+        dead time to every row, resolved and unresolved alike."""
+        waited = 0.0
+        while True:
+            h = await _href()
+            if h or waited >= timeout_s:
+                return h
+            await asyncio.sleep(step_s)
+            waited += step_s
+
     # React page: a button that exists isn't necessarily wired yet, so a too-early
     # click silently does nothing. Retry across the visible buttons.
-    for attempt in range(3):
+    #
+    # Bounded much more tightly than it used to be, because this is the path a
+    # row that will NEVER resolve walks in full, and most of the queue is exactly
+    # that. It previously clicked every visible Apply button at a 6s timeout each
+    # and then slept 6.5s, three times over — a dead row cost ~50s against ~8s
+    # for one that resolves, so the failures dominated the pass.
+    for attempt in range(2):
         if await _href():
             break
         try:
             buttons = await page.query_selector_all("button:has-text('Apply')")
         except Exception:
             buttons = []
+        if not buttons:
+            return None  # nothing to click and no link — no modal is coming
         clicked = False
-        for b in buttons:
+        for b in buttons[:2]:  # 1st is the real one; a 2nd is the sticky header's
             try:
                 if not await b.is_visible():
                     continue
-                await b.click(timeout=6000)
+                await b.click(timeout=3000)
                 clicked = True
                 break
             except Exception:
                 continue
-        if not clicked and attempt == 2:
+        if not clicked:
             return None
-        for _ in range(5):  # wait for the modal to mount
-            await asyncio.sleep(1.0)
-            if await _href():
-                break
-        if await _href():
+        if await _wait_href(4.0):
             break
-        await asyncio.sleep(1.5)  # let hydration finish, then retry
+        await asyncio.sleep(0.75)  # let hydration finish, then retry once
 
     href = await _href()
     return await _follow_apply_redirect(ctx, href) if href else None
@@ -390,6 +438,12 @@ async def _extract_apply(page, ctx) -> Optional[str]:
 
 async def _is_login_gated(page) -> bool:
     """Logged out, every "Apply now" is just /signup/talent."""
+    # A page that bounced us to signup/login is gated outright, whatever its
+    # anchors say — and "Apply" rendered as a <button> makes the anchor scan
+    # below read clean, so a lapsed session used to be logged as the much more
+    # innocuous "no employer URL".
+    if re.search(r"/(signup|login|signin)\b", page.url or ""):
+        return True
     try:
         hrefs = await page.eval_on_selector_all(
             "a", "els => els.filter(e => /apply/i.test(e.textContent || ''))"
@@ -421,6 +475,13 @@ async def resolve_pending(limit: int = 0) -> int:
     profile = str(Path(settings.user_data_dir).parent / "himalayas-chrome")
     resolved: list = []
     proc = relay = pw = None
+    # Hard ceiling on the pass. Bounding the queue keeps it short in the normal
+    # case; this keeps a bad case (every row slow, or slow-but-succeeding) from
+    # running into the next scheduled cycle. Unfinished rows are not lost — they
+    # stay pending and lead the next run, which is ordered newest-first.
+    budget_min = max(1, settings.himalayas_resolve_budget_min)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + budget_min * 60
     try:
         server = None
         if proxy_for("himalayas"):
@@ -442,7 +503,13 @@ async def resolve_pending(limit: int = 0) -> int:
             pass
 
         cf_fails = 0
+        misses = 0  # consecutive rows that yielded nothing
         for i, job in enumerate(jobs, 1):
+            if loop.time() >= deadline:
+                log.warning("[himalayas] {}-minute budget reached at {}/{} — stopping "
+                            "(the rest stay queued for the next run)",
+                            budget_min, i, len(jobs))
+                break
             try:
                 await page.goto(job["url"], wait_until="domcontentloaded", timeout=60000)
                 if not await clear_challenge(page, max_wait_s=100):
@@ -459,13 +526,28 @@ async def resolve_pending(limit: int = 0) -> int:
                 await _settle(page)
                 url = await _extract_apply(page, ctx)
                 if url:
+                    misses = 0
                     resolved.append({"id": job["id"], "apply_url": url})
                     log.info("[himalayas] {}/{} id={} -> {}", i, len(jobs), job["id"], url[:70])
                 elif await _is_login_gated(page):
+                    misses += 1
                     log.info("[himalayas] {}/{} id={} login-gated (session expired?)",
                              i, len(jobs), job["id"])
                 else:
+                    misses += 1
                     log.info("[himalayas] {}/{} id={} no employer URL", i, len(jobs), job["id"])
+                # Bail out of a pass that is resolving NOTHING. Gated on `resolved`
+                # being empty, not on the streak alone: the hit rate varies a lot
+                # (plenty of postings really are signup-only), so a long miss run
+                # inside an otherwise working pass is normal and must not truncate
+                # it. Zero hits after this many rows is the other thing entirely —
+                # the whole queue is unresolvable, which is how one run walked 212
+                # rows down the slow no-modal path and was still going hours later.
+                if not resolved and misses >= _MAX_CONSECUTIVE_MISSES:
+                    log.warning("[himalayas] first {} rows resolved nothing — stopping "
+                                "(check the himalayas session / account apply limits)",
+                                misses)
+                    break
             except Exception as e:
                 log.warning("[himalayas] {}/{} id={} error: {}",
                             i, len(jobs), job["id"], str(e)[:70])
