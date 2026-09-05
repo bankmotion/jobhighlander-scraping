@@ -62,3 +62,6 @@ browser and DB writer are reused as-is.
 Not wired yet — waiting on the Indeed sign-in flow. It will slot into
 `scraper/` as a session module (email/password or Google OAuth), persisting an
 `indeed_session.json` alongside the persistent profile.
+
+
+<!-- Security scan triggered at 2026-09-05 07:52:30 -->
