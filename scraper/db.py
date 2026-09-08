@@ -141,7 +141,22 @@ ON DUPLICATE KEY UPDATE
     remote = VALUES(remote),
     location = VALUES(location),
     salary = COALESCE(VALUES(salary), salary),
-    posted_at = VALUES(posted_at),
+    -- Earliest wins, never the newest. Sites bump a listing's publish date to
+    -- keep it looking fresh, and taking VALUES() straight let that bump rewrite
+    -- history: a job first seen on the 30th ended up stamped "posted" on the
+    -- 7th, so the card read "Posted 1 day ago - Scraped 9 days ago". Posted
+    -- after it was scraped is not a thing that can happen.
+    --
+    -- A LOWER incoming date is still accepted, because that is the source
+    -- correcting itself towards the real posting time rather than away from it.
+    --
+    -- COALESCE on both sides because LEAST() is NULL if any argument is: the
+    -- pair collapses to whichever value exists, and to NULL only if neither
+    -- does.
+    posted_at = LEAST(
+        COALESCE(posted_at, VALUES(posted_at)),
+        COALESCE(VALUES(posted_at), posted_at)
+    ),
     -- Deliberately NOT updated: site_job_id and fingerprint.
     -- Whichever unique key matched is the row's identity; rewriting it on every
     -- pass would rename the listing each time a source rotates its id, and
