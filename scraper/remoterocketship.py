@@ -176,21 +176,39 @@ class RemoteRocketshipScraper(BaseScraper):
     def _saved(self) -> int:
         return self.counts["inserted"] + self.counts["updated"] + self.counts["unchanged"]
 
-    def _list_url(self, page: int) -> str:
-        """The configured search URL with `page` forced to ours.
+    def _searches(self) -> list[str]:
+        """Every configured search, newest-first.
 
-        The setting holds the link you would paste from the site, so filters
-        stay editable from the admin UI without anyone needing to know this
-        endpoint exists — the same arrangement LinkedIn uses.
+        WHITESPACE-SEPARATED, so one setting holds several links. This is the
+        only way to widen coverage right now: a logged-out visitor gets 20 jobs
+        and no pager, and those 20 span about three hours — nowhere near a day.
+        A second search with a different job title returns its own newest 20, so
+        N searches reach roughly N x 20 of the last 24 hours instead of one
+        narrow slice. Overlap between searches costs nothing: the upsert matches
+        on (site, site_job_id) and lands a repeat as an update.
         """
         raw = (getattr(settings, "remoterocketship_search_url", "") or "").strip()
-        if not raw:
-            raw = f"{_BASE}/us/remote-jobs/?sort=DateAdded"
-        base, _, query = raw.partition("?")
-        kept = [
-            p for p in query.split("&") if p and not p.lower().startswith("page=")
-        ]
-        kept.append(f"page={page}")
+        urls = [u for u in raw.split() if u.startswith("http")]
+        return urls or [f"{_BASE}/us/remote-jobs/?sort=DateAdded"]
+
+    @staticmethod
+    def _list_url(search: str, page: int) -> str:
+        """One search, asking for our 1-based `page` of results.
+
+        PAGING NEEDS THE PREMIUM SESSION. Logged out, every `page` value returns
+        the first 20 — silently, with no pager rendered and no error, which is
+        this site's entire paywall. Signed in, it works.
+
+        THE SITE IS OFF BY ONE. `page=1` and `page=2` both return the first
+        slice; the second slice is `page=3`. Verified over pages 1-5 signed in:
+        80 unique jobs, with page 2 a duplicate of page 1. So slice N (0-based)
+        is requested as `page = N + 2`, except slice 0 which uses `page=1`.
+        Doing the arithmetic here keeps the caller counting normally.
+        """
+        wire = 1 if page <= 1 else page + 1
+        base, _, query = search.partition("?")
+        kept = [p for p in query.split("&") if p and not p.lower().startswith("page=")]
+        kept.append(f"page={wire}")
         return f"{base}?{'&'.join(kept)}"
 
     async def _payload(self, url: str) -> dict:
@@ -263,78 +281,106 @@ class RemoteRocketshipScraper(BaseScraper):
         )
 
     # ── the run ──────────────────────────────────────────────────────────
-    async def scrape(self) -> None:
-        # Today's postings only. The listing is newest-first, so the first job
-        # older than this means every job after it is older too — the run stops
-        # there rather than paging through history it would only discard.
-        cutoff = datetime.utcnow() - timedelta(hours=_TODAY_HOURS)
-        log.info("[{}] taking postings newer than {} UTC",
-                 self.site, cutoff.replace(microsecond=0))
-
-        seen: set[str] = set()
+    async def _sweep(self, search: str, cutoff, seen: set, delay: float) -> None:
+        """One configured search, newest-first, stopping at the cutoff."""
         dry = 0
-        delay = float(getattr(settings, "remoterocketship_delay_s", 2.0))
-
         for page_no in range(1, _MAX_PAGES + 1):
             if settings.max_jobs and self._saved() >= settings.max_jobs:
                 log.info("[{}] hit max_jobs={} — stopping.", self.site, settings.max_jobs)
-                break
+                return
 
-            data = await self._payload(self._list_url(page_no))
+            data = await self._payload(self._list_url(search, page_no))
             props = (data.get("props") or {}).get("pageProps") or {}
             openings: list[Any] = props.get("initialJobOpenings") or []
 
             if not openings:
                 dry += 1
-                log.info("[{}] page {} — no jobs ({}/{} dry)", self.site, page_no, dry, _DRY_STREAK)
                 if dry >= _DRY_STREAK:
-                    log.info("[{}] end of results.", self.site)
-                    break
+                    return
                 await asyncio.sleep(delay)
                 continue
 
             fresh = [j for j in openings if str(j.get("id")) not in seen]
             seen.update(str(j.get("id")) for j in openings)
             if not fresh:
-                # Every id repeated: the site is serving the same page again,
-                # which is what paging past the end looks like here.
+                # Every id already seen. Either this search overlaps one already
+                # swept, or the site is serving the same page again — which is
+                # what paging past the end looks like here.
                 dry += 1
-                log.info("[{}] page {} — all {} repeats ({}/{} dry)",
-                         self.site, page_no, len(openings), dry, _DRY_STREAK)
                 if dry >= _DRY_STREAK:
-                    break
+                    return
                 continue
             dry = 0
 
-            on_li = sum(1 for j in fresh if j.get("isOnLinkedIn") is True)
-            log.info("[{}] page {} — {} jobs, {} new, {} of them on LinkedIn",
-                     self.site, page_no, len(openings), len(fresh), on_li)
-
             # Newest-first means the page is ordered, so the first stale row
-            # ends the run. Checked before any detail fetch: paying a request
-            # per job only to discard it is the expensive way to be wrong.
+            # ends this search. Checked before any detail fetch: paying a
+            # request per job only to discard it is the expensive way to be
+            # wrong.
             stale = [j for j in fresh if (_posted_at(j.get("created_at")) or cutoff) < cutoff]
             if stale:
-                log.info("[{}] page {} — reached postings older than today, stopping.",
-                         self.site, page_no)
+                log.info("[{}] reached postings older than {}h — ending this search.",
+                         self.site, _TODAY_HOURS)
                 fresh = [j for j in fresh if j not in stale]
+
+            on_li = sum(1 for j in fresh if j.get("isOnLinkedIn") is True)
+            log.info("[{}] page {} — {} jobs, {} within {}h, {} on LinkedIn",
+                     self.site, page_no, len(openings), len(fresh), _TODAY_HOURS, on_li)
 
             for listing in fresh:
                 if settings.max_jobs and self._saved() >= settings.max_jobs:
-                    break
-                title = (listing.get("roleTitle") or "").strip()
-                if not self._matches(title):
+                    return
+                if not self._matches((listing.get("roleTitle") or "").strip()):
                     continue
-                detail = await self._detail(listing)
-                job = self._to_job(listing, detail)
+                job = self._to_job(listing, await self._detail(listing))
                 if job:
                     self.save(job)
                 await asyncio.sleep(random.uniform(delay * 0.6, delay * 1.4))
 
             if stale:
-                break
-
+                return
             await asyncio.sleep(random.uniform(delay * 0.6, delay * 1.4))
-        else:
-            log.info("[{}] hit the {}-page budget (~{} jobs scanned)",
-                     self.site, _MAX_PAGES, _MAX_PAGES * _PAGE_SIZE)
+
+    async def _sign_in(self) -> None:
+        """Apply the premium session, without which paging silently does nothing.
+
+        Best-effort: a failure still yields the first 20 jobs, which is a
+        smaller run rather than a broken one. The warning says which happened,
+        because "20 jobs" looks identical either way.
+        """
+        try:
+            from scraper.auth.site_login import ensure_session
+
+            jar = await ensure_session(self.site)
+            if not jar:
+                log.warning("[{}] no session — paging will not work, expect ~20 jobs", self.site)
+                return
+            await self.browser.context.add_cookies([
+                {"name": k, "value": v, "domain": ".remoterocketship.com", "path": "/"}
+                for k, v in jar.items()
+            ])
+            log.info("[{}] premium session applied ({} cookies)", self.site, len(jar))
+        except Exception as e:
+            log.warning("[{}] sign-in unavailable, continuing signed out: {}", self.site, e)
+
+    async def scrape(self) -> None:
+        await self._sign_in()
+        # A rolling window, not a calendar day — see `_TODAY_HOURS`.
+        cutoff = datetime.utcnow() - timedelta(hours=_TODAY_HOURS)
+        searches = self._searches()
+        log.info("[{}] {} search(es), postings newer than {} UTC",
+                 self.site, len(searches), cutoff.replace(microsecond=0))
+
+        # Shared across searches, so an overlapping result is fetched once. The
+        # DB would absorb the repeat as an update anyway; this saves the detail
+        # request, which is the expensive half.
+        seen: set[str] = set()
+        delay = float(getattr(settings, "remoterocketship_delay_s", 2.0))
+
+        for i, search in enumerate(searches, 1):
+            if settings.max_jobs and self._saved() >= settings.max_jobs:
+                break
+            log.info("[{}] search {}/{}: {}", self.site, i, len(searches), search[:110])
+            await self._sweep(search, cutoff, seen, delay)
+
+        log.info("[{}] {} unique postings seen across {} search(es)",
+                 self.site, len(seen), len(searches))

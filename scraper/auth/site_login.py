@@ -55,6 +55,22 @@ SITES = {
         "logged_out": r"/(login|signup)\b",
         "domain": "himalayas.app",
     },
+    "remoterocketship": {
+        # /login, /signin and /sign-in are all 404s — the real path is /log-in/.
+        "login": "https://www.remoterocketship.com/log-in/?redirect=%2F",
+        "oauth": None,  # a "Continue with Google" button, not a direct endpoint
+        # The HOMEPAGE, not the listing. The listing is a heavy React page whose
+        # anchors are not in the DOM when the probe reads them, and an empty
+        # anchor list makes the scan below conclude "no login link, so we must
+        # be signed in" — a false positive that reports success with zero
+        # cookies. The homepage renders its header links server-side.
+        "probe": "https://www.remoterocketship.com/",
+        "logged_out": r"/(log-in|onboard)",
+        # The header hydrates late. At the default 2.5s there are no anchors
+        # in the DOM at all, and the scan reads that as "signed in".
+        "settle_s": 7.0,
+        "domain": "remoterocketship.com",
+    },
     "dice": {
         "login": "https://www.dice.com/dashboard/login",
         "oauth": None,  # a "Continue with Google" button, not a direct endpoint
