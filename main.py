@@ -29,6 +29,7 @@ from scraper.remoteok import RemoteOkScraper
 from scraper.themuse import TheMuseScraper
 from scraper.weworkremotely import WeWorkRemotelyScraper
 from scraper.ziprecruiter import ZipRecruiterScraper
+from scraper.remoterocketship import RemoteRocketshipScraper
 
 SCRAPERS = {
     "indeed": IndeedScraper,
@@ -43,6 +44,7 @@ SCRAPERS = {
     "linkedin": LinkedInScraper,
     "dice": DiceScraper,
     "ziprecruiter": ZipRecruiterScraper,
+    "remoterocketship": RemoteRocketshipScraper,
     # Add more sites here as their links arrive — each reuses the same core.
 }
 
@@ -62,6 +64,7 @@ def enabled_sites() -> list[str]:
         "linkedin": settings.enable_linkedin,
         "dice": settings.enable_dice,
         "ziprecruiter": settings.enable_ziprecruiter,
+        "remoterocketship": settings.enable_remoterocketship,
     }
     return [s for s in SCRAPERS if flags.get(s, True)]
 

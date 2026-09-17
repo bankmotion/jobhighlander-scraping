@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     enable_linkedin: bool = True
     enable_dice: bool = True
     enable_ziprecruiter: bool = True
+    #: Off until someone turns it on. Its postings are gated per profile as
+    #: well, so nothing becomes visible by enabling this alone.
+    enable_remoterocketship: bool = False
 
     # ── Per-site proxy routing ──
     # Whether each site's traffic goes through `proxy_url` (the shared IPRoyal
@@ -83,6 +86,10 @@ class Settings(BaseSettings):
     #: server's own (Finnish) IP it geo-redirects to ziprecruiter.ie and there
     #: are no US listings to read; the proxy is what makes the visitor American.
     ziprecruiter_use_proxy: bool = True
+    #: REQUIRED, not a preference. Plain HTTP gets a Cloudflare 403 from every
+    #: address tried, and the operator's own IP is blocked outright — the site
+    #: is unreachable without an exit that is not ours.
+    remoterocketship_use_proxy: bool = True
 
     # ── Indeed ──
     indeed_search_url: str = "https://www.indeed.com/q-us-remote-jobs.html"
@@ -186,6 +193,16 @@ class Settings(BaseSettings):
     #: redirect tab, so the pass length tracks the result count — which a
     #: widened filter can multiply without warning.
     ziprecruiter_budget_min: int = 30
+    #: A normal browsable remoterocketship.com search link. `page` is stripped
+    #: and driven by the scraper; every other filter is forwarded verbatim, so
+    #: the search stays editable from the admin UI.
+    remoterocketship_search_url: str = (
+        "https://www.remoterocketship.com/us/remote-jobs/"
+        "?sort=DateAdded&locations=United+States&jobTitle=Software%2520Engineer"
+    )
+    remoterocketship_role_regex: str = r"engineer|developer|software|programmer"  # "" = every role
+    remoterocketship_max_age_days: int = 3
+    remoterocketship_delay_s: float = 2.0
     ziprecruiter_session_file: str = str(BASE_DIR / "sessions" / "ziprecruiter_session.json")
     ziprecruiter_user_data_dir: str = str(BASE_DIR / "sessions" / "ziprecruiter-chrome-profile")
 
@@ -281,6 +298,9 @@ DB_MANAGED_KEYS: tuple = (
     "enable_dice", "dice_search_url", "dice_role_regex", "dice_max_age_days",
     "dice_delay_s",
     "enable_ziprecruiter", "ziprecruiter_search_url", "ziprecruiter_role_regex",
+    "enable_remoterocketship", "remoterocketship_use_proxy",
+    "remoterocketship_search_url", "remoterocketship_role_regex",
+    "remoterocketship_max_age_days", "remoterocketship_delay_s",
     "ziprecruiter_max_age_days", "ziprecruiter_delay_s", "ziprecruiter_budget_min",
     # Per-site proxy routing (see `proxy_for`).
     "indeed_use_proxy", "glassdoor_use_proxy", "jobright_use_proxy",

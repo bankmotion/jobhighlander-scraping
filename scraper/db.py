@@ -127,8 +127,10 @@ _ALLOWED_TABLES = {"jobs", "jobs_temp"}
 _UPSERT_SQL = """
 INSERT INTO {table}
     (site, site_job_id, title, description, job_url, apply_url, company, company_url,
-     job_type, remote, location, salary, posted_at, fingerprint, created_at, updated_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
+     job_type, remote, on_linkedin, location, salary, posted_at, fingerprint,
+     created_at, updated_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+        UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))
 ON DUPLICATE KEY UPDATE
     title = VALUES(title),
     description = VALUES(description),
@@ -139,6 +141,10 @@ ON DUPLICATE KEY UPDATE
     company_url = COALESCE(VALUES(company_url), company_url),
     job_type = COALESCE(VALUES(job_type), job_type),
     remote = VALUES(remote),
+    -- COALESCE, like the other detail-only fields: a site that does not report
+    -- this sends NULL, and a re-scrape from such a source must not erase what
+    -- Remote Rocketship already established.
+    on_linkedin = COALESCE(VALUES(on_linkedin), on_linkedin),
     location = VALUES(location),
     salary = COALESCE(VALUES(salary), salary),
     -- Earliest wins, never the newest. Sites bump a listing's publish date to
@@ -236,6 +242,7 @@ class JobRepository:
         job_type: Optional[str] = None,
         remote: bool = False,
         salary: Optional[str] = None,
+        on_linkedin: Optional[bool] = None,
     ) -> str:
         """Insert or update one job. Returns 'inserted' | 'updated' | 'unchanged'."""
         if self._conn is None:
@@ -258,7 +265,8 @@ class JobRepository:
             cur.execute(
                 _UPSERT_SQL.format(table=self.table),
                 (site, site_job_id, title, description, link, apply_url, company,
-                 company_url, job_type, remote, location, salary, posted_at, fingerprint),
+                 company_url, job_type, remote, on_linkedin, location, salary,
+                 posted_at, fingerprint),
             )
             # PyMySQL/MySQL rowcount: 1 = inserted, 2 = updated, 0 = no change.
             #

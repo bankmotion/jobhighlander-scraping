@@ -29,6 +29,10 @@ class ScrapedJob:
     job_type: Optional[str] = None
     remote: bool = False
     salary: Optional[str] = None
+    #: Whether the posting is ALSO on LinkedIn. None means "this source does not
+    #: say", which is every site but Remote Rocketship — so the column stays
+    #: NULL rather than defaulting to a False the UI would show as fact.
+    on_linkedin: Optional[bool] = None
 
 
 class BaseScraper:
@@ -103,6 +107,7 @@ class BaseScraper:
             job_type=job.job_type,
             remote=job.remote,
             salary=job.salary,
+            on_linkedin=job.on_linkedin,
         )
         self.counts[result] = self.counts.get(result, 0) + 1
         log.info("[{}] saved {} ({}) — {}", self.site, result, job.site_job_id, (job.title or "")[:50])
