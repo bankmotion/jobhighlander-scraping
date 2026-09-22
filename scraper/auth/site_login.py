@@ -208,6 +208,37 @@ def launch_chrome(profile: str, port: int, proxy_server: Optional[str] = None):
                        "(close any Chrome already using this profile)")
 
 
+async def dismiss_consent(page) -> bool:
+    """Close a Google Funding Choices consent dialog if one is up.
+
+    It renders as a full-screen `.fc-consent-root` overlay that INTERCEPTS
+    POINTER EVENTS, so the sign-in button underneath is visible and enabled but
+    unclickable — Playwright retries the click until it times out, and the login
+    fails with no error that names the cause. Himalayas sign-in was failing this
+    way for long enough that 62% of its jobs never got an employer apply URL.
+
+    Returns whether anything was dismissed. Best-effort throughout: no dialog is
+    the normal case, and a failure here must not take the login down with it.
+    """
+    for sel in (
+        ".fc-consent-root .fc-cta-consent",
+        ".fc-consent-root button.fc-primary-button",
+        "button:has-text('Consent')",
+        "button:has-text('Agree')",
+        "button:has-text('Accept all')",
+    ):
+        try:
+            btn = await page.wait_for_selector(sel, timeout=2500, state="visible")
+            if btn:
+                await btn.click(timeout=4000)
+                await asyncio.sleep(1.0)
+                log.info("consent dialog dismissed via {}", sel)
+                return True
+        except Exception:
+            continue
+    return False
+
+
 async def is_signed_in(page, site: str) -> bool:
     """Whether `probe` renders as a signed-in page.
 
@@ -221,6 +252,7 @@ async def is_signed_in(page, site: str) -> bool:
     try:
         await page.goto(cfg["probe"], wait_until="domcontentloaded", timeout=45000)
         await clear_challenge(page, max_wait_s=90)
+        await dismiss_consent(page)
         await asyncio.sleep(2.5)
         if cfg.get("logged_out_url"):
             return not re.search(cfg["logged_out_url"], page.url or "")
@@ -295,6 +327,9 @@ async def sign_in(site: str, ctx, page) -> bool:
     log.info("[{}] signing in with Google...", site)
     await page.goto(cfg["login"], wait_until="domcontentloaded", timeout=60000)
     await clear_challenge(page, max_wait_s=90)
+    # BEFORE hunting for the Google button. The consent overlay sits on top of
+    # it and swallows the click.
+    await dismiss_consent(page)
     await asyncio.sleep(2)
 
     btn = None

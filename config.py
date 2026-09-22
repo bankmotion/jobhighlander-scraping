@@ -156,8 +156,18 @@ class Settings(BaseSettings):
     #: 424 were stale, and the pass went from ~15 min to hours. Inside the age
     #: window a row is still retried once per run, so transient failures get
     #: plenty of chances before it ages out.
-    himalayas_resolve_max_age_days: int = 2
-    himalayas_resolve_limit: int = 150      # hard cap on rows per pass
+    #: How far back the resolve queue reaches, by WHEN WE SCRAPED the row.
+    #:
+    #: Two days could not drain: ~240 Himalayas jobs arrive daily and the window
+    #: held ~400 unresolved at any moment, so a 150-row pass fell behind every
+    #: day and the backlog grew to 4,596. A week lets a pass catch up after a
+    #: missed run instead of writing those rows off permanently.
+    himalayas_resolve_max_age_days: int = 7
+    #: Rows per pass. The real ceiling is `himalayas_resolve_budget_min` below —
+    #: this only stops a single pass queueing absurdly many. At ~6s a job the
+    #: 25-minute budget covers roughly 250, so 150 was the binding constraint
+    #: rather than the safety valve it was meant to be.
+    himalayas_resolve_limit: int = 400
     himalayas_resolve_budget_min: int = 25  # wall-clock ceiling for the pass
 
     # ── Dice (search + detail over HTTP; a browser only for the Google sign-in) ──

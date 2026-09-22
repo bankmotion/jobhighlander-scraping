@@ -287,9 +287,14 @@ def _pending_rows(limit: int = 0) -> list:
                 "SELECT id, apply_url FROM jobs "
                 "WHERE site='himalayas' AND (apply_url LIKE 'https://himalayas.app/%%' "
                 "                            OR apply_url IS NULL OR apply_url = '') "
-                # COALESCE: posted_at is always set today, but a row that ever
-                # lands without one must not become permanently unqueueable.
-                "  AND COALESCE(posted_at, created_at) >= UTC_TIMESTAMP() - INTERVAL %s DAY "
+                # WHEN WE SAW IT, not when it was posted. This queue is our own
+                # backlog: a job scraped today with a three-week-old posting date
+                # still needs its employer link, and keying on `posted_at` made
+                # such a row unreachable from the moment it arrived. That was
+                # masked while sites bumped their publish dates forward — the
+                # bump kept old rows inside the window — and the masking stopped
+                # when that bumping was fixed.
+                "  AND created_at >= UTC_TIMESTAMP() - INTERVAL %s DAY "
                 "ORDER BY id DESC LIMIT %s",
                 (days, limit))
             return [{"id": r[0], "url": r[1]} for r in cur.fetchall()]
