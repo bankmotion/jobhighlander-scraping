@@ -54,7 +54,7 @@ from logger import log
 from scraper import human
 from scraper.auth.google_auth import GoogleAuthService
 from scraper.base_scraper import BaseScraper, ScrapedJob
-from scraper.flight import flight_text, flight_value, text_chunk
+from scraper.flight import flight_text, flight_value, is_ref, text_chunk
 from scraper.session import SessionStore
 
 _BASE = "https://www.ziprecruiter.com"
@@ -401,8 +401,17 @@ class ZipRecruiterScraper(BaseScraper):
             return None
         raw = jd.get("htmlFullDescription")
         text = text_chunk(ft, raw)
-        if text is None and isinstance(raw, str):
-            text = raw            # already inline rather than a reference
+        if text is None and isinstance(raw, str) and not is_ref(raw):
+            # Inline text, not a pointer — use it as-is.
+            text = raw
+        elif text is None and is_ref(raw):
+            # A reference we could not resolve: the record it names is not in
+            # this payload. Return nothing rather than the pointer. Storing
+            # "$4d" as a description produces a job card with no description at
+            # all, and nothing downstream can tell that apart from a posting
+            # that genuinely had none.
+            log.warning("[ziprecruiter] unresolved description reference {} for {}", raw, listing_key)
+            return ""
         return _clean_html(text or "")
 
     async def _description(self, card: dict, page_no: int) -> str:

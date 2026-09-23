@@ -90,6 +90,21 @@ def flight_value(text: str, key: str, start: int = 0):
     return None
 
 
+#: A flight reference: "$" then a hex record id, e.g. "$27", "$4d".
+_REF_RE = re.compile(r"^\$[0-9a-fA-F]+$")
+
+
+def is_ref(value) -> bool:
+    """Whether `value` POINTS AT a record rather than being one.
+
+    Needed because an unresolved reference is a perfectly ordinary-looking
+    string. Falling back to "it must already be inline" when resolution fails
+    stores the pointer itself — ZipRecruiter shipped 180 jobs whose entire
+    description was "$4d" or "$35" that way, which renders as an empty card.
+    """
+    return isinstance(value, str) and bool(_REF_RE.match(value))
+
+
 def text_chunk(text: str, ref: str) -> Optional[str]:
     """Resolve a text reference like "$27" to the blob in record `27`.
 
