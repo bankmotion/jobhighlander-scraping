@@ -333,7 +333,13 @@ async def sign_in(site: str, ctx, page) -> bool:
     await asyncio.sleep(2)
 
     btn = None
+    # Ordered most-specific first, and BOTH wordings up front: Himalayas says
+    # "Sign in with Google" where the others say "Continue with". Without its
+    # wording listed, it only matched the loose 'button:has-text("Google")'
+    # fallback after two 4s timeouts -- it worked, but spent 8s per login
+    # looking like a failure in the logs.
     for sel in ('a:has-text("Continue with Google")', 'button:has-text("Continue with Google")',
+                'a:has-text("Sign in with Google")', 'button:has-text("Sign in with Google")',
                 'button:has-text("Google")', '[class*="google" i]'):
         try:
             btn = await page.wait_for_selector(sel, timeout=4000, state="visible")
