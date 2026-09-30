@@ -93,6 +93,15 @@ class BaseScraper:
                 self.site, job.posted_at, settings.max_age_days, (job.title or "")[:50],
             )
             return "too_old"
+        dup = self.repo.recent_duplicate(
+            site=self.site, site_job_id=job.site_job_id, company=job.company,
+            title=job.title, description=job.description)
+        if dup:
+            self.counts["skipped"] += 1
+            log.info("[{}] skipped (same company + title as job #{} from the last {}d) — {} at {}",
+                     self.site, dup, settings.duplicate_window_days,
+                     (job.title or "")[:50], (job.company or "")[:40])
+            return "skipped"
         result = self.repo.upsert_job(
             site=self.site,
             site_job_id=job.site_job_id,

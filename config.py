@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     # Global scrape limits (apply to every scraper). Prefer bounding by recency:
     max_jobs: int = 0  # 0 = no count cap (scrape all, bounded by max_age_days + pagination)
     max_age_days: int = 7  # only keep jobs posted within N days (0 = no age limit)
+    #: A new job with the same company and title as one added within this many
+    #: days, from ANY source, is a duplicate and is not stored. After the window
+    #: it counts as a new posting again. Mirrored by DUPLICATE_WINDOW_DAYS in
+    #: backend/src/services/job.service.ts for jobs added by hand.
+    duplicate_window_days: int = 30
     #: Companies to never store, comma-separated, matched on the WHOLE name
     #: (case-insensitive, trimmed) — not as a substring. Recruiting middlemen
     #: like Ladders relist other companies' roles under their own name, so the

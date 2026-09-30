@@ -12,6 +12,10 @@ The second exists because the first is not stable at the source. The Muse
 regenerates the hash in its URL slug on every render, and Glassdoor issues
 several listing ids for one posting, so keying only on the source id let the
 same job into the table five times.
+
+A THIRD rule is not a key, because it has a time limit: a NEW job with the same
+company and title as a job added in the last `duplicate_window_days` days, from
+ANY source, is not stored at all. See `recent_duplicate`.
 """
 from __future__ import annotations
 
@@ -171,6 +175,41 @@ ON DUPLICATE KEY UPDATE
 """
 
 
+#: Job sources only some profiles can see. Must match GATED_SITES in
+#: backend/src/services/grant.service.ts.
+_GATED_SITES = ("remoterocketship",)
+
+#: Is this the same LISTING we already hold? Checked first, so a re-scrape of a
+#: job we have keeps updating it as it always did, and only a job that would
+#: become a NEW row is held to the company + title rule.
+_SAME_LISTING_SQL = """
+SELECT 1 FROM jobs WHERE site = %s AND (site_job_id = %s OR fingerprint = %s) LIMIT 1
+"""
+
+#: The newest job with the same company and title inside the window.
+#:
+#: The key is computed here from the incoming values with the SAME expression
+#: that generates `jobs.company_title_key` (migration
+#: 20260930200000_jobs_company_title_key), so there is one normalisation, not a
+#: Python copy of it to drift. The derived table `p` computes it once.
+#:
+#: Only a job everyone can see counts as the original. A copy on a paid source,
+#: or a hand-added job restricted to one profile, must not keep the public
+#: posting off the board for everybody else.
+_RECENT_SAME_ROLE_SQL = """
+SELECT j.id
+  FROM (SELECT TRIM(REGEXP_REPLACE(LOWER(%s), '[^a-z0-9]+', ' ')) AS c,
+               TRIM(REGEXP_REPLACE(LOWER(%s), '[^a-z0-9]+', ' ')) AS t) AS p
+  JOIN jobs AS j
+    ON p.c <> '' AND j.company_title_key = SHA1(CONCAT(p.c, '|', p.t))
+ WHERE j.created_at >= UTC_TIMESTAMP(3) - INTERVAL %s DAY
+   AND j.visible_to_profile_id IS NULL
+   AND j.site NOT IN ({gated})
+ ORDER BY j.id DESC
+ LIMIT 1
+""".format(gated=", ".join("'%s'" % s for s in _GATED_SITES))
+
+
 class JobRepository:
     def __init__(self, table: str = "jobs"):
         if table not in _ALLOWED_TABLES:
@@ -225,6 +264,35 @@ class JobRepository:
                 "WHERE site = %s AND description IS NOT NULL AND description <> ''",
                 (site,))
             return {row[0] for row in cur.fetchall()}
+
+    def recent_duplicate(self, *, site: str, site_job_id: str, company: Optional[str],
+                         title: str, description: str) -> Optional[int]:
+        """The id of a job this one duplicates, or None to store it.
+
+        A duplicate is a job that would be a NEW row, whose company and title
+        match a job added in the last `duplicate_window_days` days from any
+        source. Only for the live `jobs` table: the key does not exist on
+        `jobs_temp`, and a staging table is not the board.
+        """
+        if self.table != "jobs" or not company or not settings.duplicate_window_days:
+            return None
+        if self._conn is None:
+            self.connect()
+        assert self._conn is not None
+        # Clamped exactly as upsert_job clamps them, or a long title would be
+        # compared in a form the stored row does not have.
+        site_job_id = _clamp("site_job_id", site_job_id)
+        company = _clamp("company", company)
+        title = _clamp("title", title)
+        with self._conn.cursor() as cur:
+            cur.execute(_SAME_LISTING_SQL,
+                        (site, site_job_id, _fingerprint(site, company, title, description)))
+            if cur.fetchone():
+                return None
+            cur.execute(_RECENT_SAME_ROLE_SQL,
+                        (company, title, int(settings.duplicate_window_days)))
+            row = cur.fetchone()
+            return int(row[0]) if row else None
 
     def upsert_job(
         self,
