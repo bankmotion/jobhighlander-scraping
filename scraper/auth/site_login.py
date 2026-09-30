@@ -46,6 +46,11 @@ _CHROME_PATHS = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 )
 
+#: CDP port for the sign-in browser. Unused by every scraper's own browser
+#: (9222 Himalayas, 9224 Jobicy, 9225 The Muse), so a sign-in never attaches to
+#: one of them.
+_LOGIN_CDP_PORT = 9226
+
 #: site -> (login page, google oauth entry, signed-in probe url, logged-out marker)
 SITES = {
     "himalayas": {
@@ -54,6 +59,14 @@ SITES = {
         "probe": "https://himalayas.app/",
         "logged_out": r"/(login|signup)\b",
         "domain": "himalayas.app",
+        # The cookies that exist only while signed in. See `jar_is_signed_in`.
+        # NOT himalayas_app_session: a signed-out visitor gets one too.
+        "auth_cookies": ("himalayas_refresh_token", "himalayas_access_token"),
+        # Himalayas' own "who am I": the signed-in user as JSON, or null. The
+        # only test that held up. The page misleads (no sign-in links in the
+        # DOM either way), and the cookies mislead (a 30-minute `user.expires_at`
+        # that lapses without signing anyone out).
+        "me_api": "/api/auth/me",
     },
     "remoterocketship": {
         # /login, /signin and /sign-in are all 404s — the real path is /log-in/.
@@ -119,6 +132,37 @@ def load_cookie_jar(site: str) -> dict:
     except Exception as e:
         log.warning("[{}] could not read session from DB: {}", site, e)
         return {}
+
+
+def jar_is_signed_in(site: str, jar: dict) -> bool:
+    """Whether a stored cookie jar still carries the site's sign-in cookie.
+
+    A jar can be non-empty and signed out. Analytics, consent and Cloudflare
+    cookies outlive a login by months: Himalayas' stored session kept twelve of
+    them after its tokens lapsed, and since any non-empty jar counted as a
+    session, nothing ever signed in again. The apply-URL pass then found every
+    job login-gated and resolved none for two weeks, and saved the signed-out
+    jar back after each pass, so it could not recover on its own.
+
+    Sites that name their sign-in cookies (`auth_cookies`) are judged by those.
+    The rest keep the old rule, anything at all.
+    """
+    names = SITES.get(site, {}).get("auth_cookies", ())
+    return bool(jar) and (not names or any(n in jar for n in names))
+
+
+async def context_signed_in(ctx, site: str) -> bool:
+    """`jar_is_signed_in` for a live browser context."""
+    names = SITES.get(site, {}).get("auth_cookies", ())
+    if not names:
+        return True
+    domain = SITES[site]["domain"]
+    try:
+        cookies = await ctx.cookies()
+    except Exception:
+        return False
+    return any(c.get("name") in names and domain in (c.get("domain") or "")
+               for c in cookies)
 
 
 def _chrome_exe() -> str:
@@ -254,10 +298,22 @@ async def is_signed_in(page, site: str) -> bool:
         await clear_challenge(page, max_wait_s=90)
         await dismiss_consent(page)
         await asyncio.sleep(2.5)
+        if cfg.get("me_api"):
+            # The site's own answer, where it has one, over anything read off
+            # the page or the cookie jar.
+            me = await page.evaluate(
+                "u => fetch(u, {credentials: 'include'})"
+                ".then(r => r.ok ? r.json() : null).catch(() => null)",
+                cfg["me_api"])
+            return bool(me)
         if cfg.get("logged_out_url"):
-            return not re.search(cfg["logged_out_url"], page.url or "")
-        hrefs = await page.eval_on_selector_all("a", "els => els.map(e => e.getAttribute('href') || '')")
-        return not any(re.search(cfg["logged_out"], h or "") for h in hrefs)
+            looks_signed_in = not re.search(cfg["logged_out_url"], page.url or "")
+        else:
+            hrefs = await page.eval_on_selector_all("a", "els => els.map(e => e.getAttribute('href') || '')")
+            looks_signed_in = not any(re.search(cfg["logged_out"], h or "") for h in hrefs)
+        # A page can read as signed in without the session behind it, so for a
+        # site that names its sign-in cookies, those have to be present too.
+        return looks_signed_in and await context_signed_in(page.context, site)
     except Exception:
         return False
 
@@ -319,11 +375,23 @@ async def sign_in(site: str, ctx, page) -> bool:
     cfg = SITES[site]
     if await is_signed_in(page, site):
         log.info("[{}] already signed in", site)
+        # Save it anyway. This profile can hold a live session that the DB has
+        # lost, and that is exactly when this is called: returning without
+        # saving left the DB with the dead session and every pass gated.
+        try:
+            await SessionStore.save(ctx, page, session_file(site), domains=(cfg["domain"],))
+        except Exception as e:
+            log.warning("[{}] could not save session: {}", site, e)
         return True
     if not (settings.google_email and settings.google_password):
         log.warning("[{}] no GOOGLE_EMAIL/PASSWORD — cannot sign in", site)
         return False
 
+    # The Google session the other scrapers share (the 'google' row) is NOT
+    # loaded here. Tried on 2026-09-30: with those cookies in the browser, Google
+    # answered with "Verify it's you" and a reCAPTCHA, while the same sign-in in
+    # the dedicated login profile, with its own Google state, went straight
+    # through. Cookies from another browser look like a stolen session to Google.
     log.info("[{}] signing in with Google...", site)
     await page.goto(cfg["login"], wait_until="domcontentloaded", timeout=60000)
     await clear_challenge(page, max_wait_s=90)
@@ -376,9 +444,12 @@ async def ensure_session(site: str, force: bool = False) -> dict:
     """
     if not force:
         jar = load_cookie_jar(site)
-        if jar:
+        if jar_is_signed_in(site, jar):
             log.info("[{}] using saved session from DB ({} cookies)", site, len(jar))
             return jar
+        if jar:
+            log.info("[{}] saved session has {} cookies but none of them is a sign-in "
+                     "cookie — signing in again", site, len(jar))
 
     from patchright.async_api import async_playwright
     profile = str(_BASE / "sessions" / f"{site}-login-chrome")
@@ -391,7 +462,11 @@ async def ensure_session(site: str, force: bool = False) -> dict:
             direct = settings.proxy_bypass.split(",") if settings.proxy_bypass else []
             relay = LocalRoutingProxy(settings.proxy_url, direct)
             server = f"http://127.0.0.1:{await relay.start()}"
-        proc, endpoint = launch_chrome(profile, 9222, server)
+        # Its own port. `launch_chrome` REUSES whatever Chrome already listens on
+        # the port it is given, so on 9222 a sign-in started while the Himalayas
+        # resolver's browser was open would have run inside that browser, in the
+        # wrong profile, instead of in this one.
+        proc, endpoint = launch_chrome(profile, _LOGIN_CDP_PORT, server)
         pw = await async_playwright().start()
         browser = await pw.chromium.connect_over_cdp(endpoint)
         ctx = browser.contexts[0] if browser.contexts else await browser.new_context()

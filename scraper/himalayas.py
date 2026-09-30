@@ -26,7 +26,7 @@ import random
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 from typing import Optional
 
 from curl_cffi.requests import AsyncSession
@@ -427,7 +427,63 @@ async def _apply_via_modal(page, ctx) -> Optional[str]:
     return await _follow_apply_redirect(ctx, href) if href else None
 
 
-async def _extract_apply(page, ctx) -> Optional[str]:
+_JOB_PATH = re.compile(r"^/companies/([^/]+)/jobs/([^/?#]+)")
+
+# Run inside a himalayas.app page, so the session cookies go with the requests.
+# `me` is null when signed out; `applicationLink` is the posting's
+# himalayas.app/apply/<code> hop, null when signed out or when there is none.
+_API_JS = """async ([company, slug]) => {
+    const get = u => fetch(u, {credentials: 'include'})
+        .then(r => r.ok ? r.json() : null).catch(() => null);
+    const me = await get('/api/auth/me');
+    if (!me || !company) return {signedIn: !!me, link: ''};
+    const j = await get('/api/jobs/apply-link?company=' + encodeURIComponent(company)
+                        + '&slug=' + encodeURIComponent(slug));
+    return {signedIn: true, link: (j && j.applicationLink) || ''};
+}"""
+
+
+async def _api_signed_in(page) -> Optional[bool]:
+    """Himalayas' own answer to "is this session signed in", or None if unasked."""
+    try:
+        res = await page.evaluate(_API_JS, ["", ""])
+        return bool(res.get("signedIn"))
+    except Exception:
+        return None
+
+
+async def _apply_via_api(page, ctx, job_url: str):
+    """The employer link from the API the job page itself calls.
+
+    Returns (employer URL or None, signed in: True / False / None if unknown).
+
+    The same data the Apply modal shows, without the modal. Clicking through it
+    was the slow part of every row and the fragile one: with a session the API
+    accepted, the page could still render its signed-out Apply button, and the
+    row was logged as login-gated. Measured 2026-09-30: for the same two
+    postings the API gave the apply link to a live session and null to no
+    session, while the page gated both.
+    """
+    m = _JOB_PATH.match(urlparse(job_url).path or "")
+    try:
+        res = await page.evaluate(_API_JS, [m.group(1), m.group(2)] if m else ["", ""])
+    except Exception:
+        return None, None
+    link = res.get("link") or ""
+    if not link:
+        return None, bool(res.get("signedIn"))
+    link = urljoin("https://himalayas.app/", link)
+    if _is_employer_url(link):
+        return link, True
+    return await _follow_apply_redirect(ctx, link), True
+
+
+async def _extract_apply(page, ctx, job_url: str = ""):
+    """(employer URL or None, signed in: True / False / None if unknown)."""
+    # 0) the API, which is all the modal below reads from anyway
+    url, signed_in = await _apply_via_api(page, ctx, job_url or page.url)
+    if url or signed_in is False:
+        return url, signed_in
     # 1) an "Apply"-labelled anchor already pointing off-site
     try:
         anchors = await page.eval_on_selector_all(
@@ -436,9 +492,13 @@ async def _extract_apply(page, ctx) -> Optional[str]:
         anchors = []
     for a in anchors:
         if re.search(r"\bapply\b", a["t"], re.I) and _is_employer_url(a["h"]):
-            return a["h"]
-    # 2) the signed-in modal — the path that actually works
-    return await _apply_via_modal(page, ctx)
+            return a["h"], signed_in
+    if signed_in:
+        # Signed in and the API had no link: the posting has none to give, and
+        # the modal would only walk the slow path to the same answer.
+        return None, True
+    # 2) the modal, only when the API could not be asked at all
+    return await _apply_via_modal(page, ctx), signed_in
 
 
 async def _is_login_gated(page) -> bool:
@@ -465,7 +525,8 @@ async def resolve_pending(limit: int = 0) -> int:
     Needs a signed-in session: ensure_session() reuses the one in the DB and only
     opens a login browser when there isn't one.
     """
-    from scraper.auth.site_login import (ensure_session, kill_chrome_tree,
+    from scraper.auth.site_login import (context_signed_in, ensure_session,
+                                         kill_chrome_tree,
                                          launch_chrome, session_file)
     from scraper.session import SessionStore
 
@@ -509,6 +570,7 @@ async def resolve_pending(limit: int = 0) -> int:
 
         cf_fails = 0
         misses = 0  # consecutive rows that yielded nothing
+        relogged = False  # one fresh sign-in per pass, at most
         for i, job in enumerate(jobs, 1):
             if loop.time() >= deadline:
                 log.warning("[himalayas] {}-minute budget reached at {}/{} — stopping "
@@ -529,12 +591,32 @@ async def resolve_pending(limit: int = 0) -> int:
                     continue
                 cf_fails = 0
                 await _settle(page)
-                url = await _extract_apply(page, ctx)
+                url, signed_in = await _extract_apply(page, ctx, job["url"])
+                if signed_in is None:  # the API could not be asked; read the page
+                    signed_in = not await _is_login_gated(page)
+                gated = not url and not signed_in
+                if gated and not relogged:
+                    # The session lapsed, before or during the pass. Sign in again
+                    # in the dedicated login browser, NOT in this one: this
+                    # profile has no Google state of its own, and Google met a
+                    # sign-in from it with a "Verify it's you" reCAPTCHA. The
+                    # login browser saves the new session to the DB; load it
+                    # here and retry the row once.
+                    relogged = True
+                    log.info("[himalayas] {}/{} id={} login-gated — signing in again",
+                             i, len(jobs), job["id"])
+                    await ensure_session("himalayas", force=True)
+                    await SessionStore.load(ctx, None, session_file("himalayas"))
+                    await page.goto(job["url"], wait_until="domcontentloaded", timeout=60000)
+                    await clear_challenge(page, max_wait_s=100)
+                    await _settle(page)
+                    url, signed_in = await _extract_apply(page, ctx, job["url"])
+                    gated = not url and signed_in is False
                 if url:
                     misses = 0
                     resolved.append({"id": job["id"], "apply_url": url})
                     log.info("[himalayas] {}/{} id={} -> {}", i, len(jobs), job["id"], url[:70])
-                elif await _is_login_gated(page):
+                elif gated:
                     misses += 1
                     log.info("[himalayas] {}/{} id={} login-gated (session expired?)",
                              i, len(jobs), job["id"])
@@ -562,9 +644,19 @@ async def resolve_pending(limit: int = 0) -> int:
             if i < len(jobs):
                 await asyncio.sleep(random.uniform(1.0, 2.5))
 
-        try:  # push refreshed cookies back so the next run starts signed in
-            await SessionStore.save(ctx, page, session_file("himalayas"),
-                                    domains=("himalayas.app",))
+        # Push refreshed cookies back so the next run starts signed in, but ONLY
+        # a signed-in jar. Saving whatever the pass ended with is what kept a
+        # lapsed session in the DB: the signed-out jar replaced itself every run.
+        try:
+            signed = await _api_signed_in(page)
+            if signed is None:
+                signed = await context_signed_in(ctx, "himalayas")
+            if signed:
+                await SessionStore.save(ctx, page, session_file("himalayas"),
+                                        domains=("himalayas.app",))
+            else:
+                log.warning("[himalayas] ended the pass signed out — not saving "
+                            "this session over the stored one")
         except Exception:
             pass
     except Exception as e:
